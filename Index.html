@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>แจ้งเบิกเงินล่วงหน้า</title>
+  <style>
+    body {
+      font-family: 'Sarabun', 'Segoe UI', sans-serif;
+      background: #f4f5f7;
+      margin: 0;
+      padding: 20px;
+    }
+    .card {
+      max-width: 480px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 4px;
+      color: #222;
+    }
+    p.sub {
+      font-size: 13px;
+      color: #777;
+      margin: 0 0 20px;
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      color: #333;
+      margin-bottom: 6px;
+      margin-top: 16px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      font-size: 15px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fafafa;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: #06c755;
+      background: #fff;
+    }
+    select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      font-size: 15px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fafafa;
+      color: #333;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .rows-wrap {
+      margin-top: 20px;
+      padding-top: 4px;
+      border-top: 1px solid #eee;
+    }
+    .row-item {
+      position: relative;
+      background: #fafbfc;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 14px 14px 16px;
+      margin-top: 14px;
+    }
+    .row-item .row-title {
+      font-size: 13px;
+      font-weight: bold;
+      color: #555;
+    }
+    .row-item label {
+      margin-top: 10px;
+    }
+    .remove-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: none;
+      border: none;
+      color: #d93025;
+      font-size: 13px;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+    .add-btn {
+      width: 100%;
+      margin-top: 16px;
+      padding: 12px;
+      font-size: 14px;
+      font-weight: bold;
+      color: #06c755;
+      background: #fff;
+      border: 1.5px dashed #06c755;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button.submit {
+      width: 100%;
+      margin-top: 24px;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: bold;
+      color: #fff;
+      background: #06c755;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button.submit:disabled {
+      background: #aaa;
+    }
+    #msg {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 14px;
+    }
+    #msg.success { color: #06c755; }
+    #msg.error { color: #d93025; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>แจ้งเบิกเงินล่วงหน้า</h1>
+    <p class="sub">กรอกชื่อหน่วยงาน แล้วเพิ่มรายชื่อพนักงานได้ทีละหลายคน</p>
+    <p id="liffDebug" style="font-size:13px;font-weight:bold;color:#fff;background:#d93025;padding:8px 10px;border-radius:6px;margin:0 0 12px;">กำลังโหลด LIFF...</p>
+
+    <form id="reqForm">
+      <label for="unit">ชื่อหน่วยงาน</label>
+      <input type="text" id="unit" required>
+
+      <div class="rows-wrap" id="rowsWrap"></div>
+
+      <button type="button" class="add-btn" id="addBtn">+ เพิ่มรายการ</button>
+      <button type="submit" class="submit" id="submitBtn">ส่งข้อมูลทั้งหมด</button>
+    </form>
+
+    <div id="msg"></div>
+  </div>
+
+  <template id="rowTemplate">
+    <div class="row-item">
+      <button type="button" class="remove-btn">ลบ</button>
+      <div class="row-title"></div>
+      <label>รหัสพนักงาน</label>
+      <input type="text" class="empId" required>
+      <label>ชื่อ-นามสกุล</label>
+      <input type="text" class="fullName" required>
+      <label>ตำแหน่ง</label>
+      <select class="position" required>
+        <option value="" disabled selected>เลือกตำแหน่ง</option>
+        <option value="หัวหน้าชุด">หัวหน้าชุด</option>
+        <option value="รปภ.">รปภ.</option>
+      </select>
+      <label>จำนวนเงินที่ต้องการเบิก (บาท)</label>
+      <input type="number" class="amount" min="1" step="1" required>
+    </div>
+  </template>
+
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script>
+    // ===== ตั้งค่า =====
+    const LIFF_ID = '2010742029-t836X301';
+    // เปลี่ยนเป็น URL ของ Apps Script deployment ที่ deploy /exec ล่าสุด
+    const API_URL = 'https://script.google.com/macros/s/AKfycbzbH0itXYzBG1YOCITcdTTEa-Sq-tWSnGkXE0UbZ95BSJlOUI5tBZi7gleHy7kx7I8u/exec';
+
+    const liffReady = (typeof liff !== 'undefined')
+      ? liff.init({ liffId: LIFF_ID }).then(function() { return true; }).catch(function(err) {
+          console.error('LIFF init error', err);
+          document.getElementById('liffDebug').textContent = 'LIFF init error: ' + (err && err.message ? err.message : JSON.stringify(err));
+          return false;
+        })
+      : Promise.resolve(false);
+
+    liffReady.then(function(ready) {
+      const dbg = document.getElementById('liffDebug');
+      if (typeof liff === 'undefined') {
+        dbg.textContent = 'LIFF SDK: ไม่โหลด (typeof liff === undefined)';
+        return;
+      }
+      if (!ready) return; // ข้อความ error ถูกใส่ไว้แล้วจาก catch ด้านบน
+      const inClient = liff.isInClient ? liff.isInClient() : 'ไม่มีฟังก์ชันนี้';
+      let ctxType = '-';
+      try { ctxType = liff.getContext().type; } catch (e) { ctxType = 'getContext error'; }
+      dbg.style.background = '#0f9d58';
+      dbg.textContent = 'LIFF init: OK, isInClient: ' + inClient + ', context: ' + ctxType;
+    });
+
+    function buildSummaryText(unit, items) {
+      let total = 0;
+      const lines = items.map(function(it, i) {
+        const amt = Number(it.amount) || 0;
+        total += amt;
+        return (i + 1) + '. ' + it.fullName + ' (' + it.position + ') ' + amt.toLocaleString() + ' บาท';
+      });
+      return 'แจ้งเบิกเงินล่วงหน้า\nหน่วยงาน: ' + unit + '\n' +
+        lines.join('\n') +
+        '\nรวมทั้งหมด ' + total.toLocaleString() + ' บาท (' + items.length + ' รายการ)';
+    }
+
+    const rowsWrap = document.getElementById('rowsWrap');
+    const rowTemplate = document.getElementById('rowTemplate');
+    const addBtn = document.getElementById('addBtn');
+    const form = document.getElementById('reqForm');
+    const btn = document.getElementById('submitBtn');
+    const msg = document.getElementById('msg');
+
+    function addRow() {
+      const node = rowTemplate.content.firstElementChild.cloneNode(true);
+      rowsWrap.appendChild(node);
+      renumberRows();
+      node.querySelector('.remove-btn').addEventListener('click', function() {
+        if (rowsWrap.children.length === 1) return; // เหลืออย่างน้อย 1 แถวเสมอ
+        node.remove();
+        renumberRows();
+      });
+    }
+
+    function renumberRows() {
+      const items = rowsWrap.querySelectorAll('.row-item');
+      items.forEach(function(item, i) {
+        item.querySelector('.row-title').textContent = 'รายการที่ ' + (i + 1);
+        item.querySelector('.remove-btn').style.display = items.length === 1 ? 'none' : 'block';
+      });
+    }
+
+    addBtn.addEventListener('click', addRow);
+    addRow(); // เริ่มต้นด้วย 1 แถว
+
+    form.addEventListener('submit', function(e) {
+      e.preventDefault();
+
+      const unit = document.getElementById('unit').value.trim();
+      const rowEls = rowsWrap.querySelectorAll('.row-item');
+      const items = Array.from(rowEls).map(function(row) {
+        return {
+          empId: row.querySelector('.empId').value.trim(),
+          fullName: row.querySelector('.fullName').value.trim(),
+          position: row.querySelector('.position').value,
+          amount: row.querySelector('.amount').value
+        };
+      });
+
+      btn.disabled = true;
+      btn.textContent = 'กำลังส่ง...';
+      msg.textContent = '';
+      msg.className = '';
+
+      // ใช้ Content-Type: text/plain เพื่อเลี่ยง CORS preflight (OPTIONS)
+      // เพราะ Apps Script Web App ไม่รองรับการตอบ OPTIONS request
+      fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ unit: unit, items: items })
+      })
+        .then(function(res) { return res.json(); })
+        .then(function(res) {
+          if (!res.success) throw new Error(res.message || 'เกิดข้อผิดพลาดไม่ทราบสาเหตุ');
+
+          msg.textContent = 'บันทึกข้อมูลเรียบร้อย ' + res.count + ' รายการ';
+          msg.className = 'success';
+
+          return liffReady.then(function(ready) {
+            if (!ready || typeof liff === 'undefined' || !liff.isInClient || !liff.isInClient()) {
+              return; // ไม่ได้เปิดผ่าน LINE หรือ liff.init ไม่สำเร็จ ข้ามการส่งข้อความกลับ
+            }
+            return liff.sendMessages([{ type: 'text', text: buildSummaryText(unit, items) }])
+              .then(function() {
+                liff.closeWindow();
+              })
+              .catch(function(e) {
+                console.error('sendMessages error', e);
+                msg.textContent += ' (แต่ส่งสรุปกลับแชทไม่สำเร็จ: ' + (e && e.message ? e.message : JSON.stringify(e)) + ')';
+              });
+          });
+        })
+        .then(function() {
+          form.reset();
+          rowsWrap.innerHTML = '';
+          addRow();
+        })
+        .catch(function(err) {
+          msg.textContent = 'เกิดข้อผิดพลาด: ' + err.message;
+          msg.className = 'error';
+        })
+        .finally(function() {
+          btn.disabled = false;
+          btn.textContent = 'ส่งข้อมูลทั้งหมด';
+        });
+    });
+  </script>
+</body>
+</html>
