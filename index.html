@@ -257,14 +257,9 @@
       msg.textContent = '';
       msg.className = '';
 
-      // ใช้ Content-Type: text/plain เพื่อเลี่ยง CORS preflight (OPTIONS)
-      // เพราะ Apps Script Web App ไม่รองรับการตอบ OPTIONS request
-      fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ unit: unit, items: items })
-      })
-        .then(function(res) { return res.json(); })
+      // ยิงผ่าน JSONP (<script> tag) แทน fetch() เพื่อเลี่ยงปัญหา CORS
+      // ที่เกิดระหว่าง redirect chain ของ Apps Script (script.google.com -> googleusercontent.com)
+      jsonpRequest_(API_URL, { unit: unit, items: items })
         .then(function(res) {
           if (!res.success) throw new Error(res.message || 'เกิดข้อผิดพลาดไม่ทราบสาเหตุ');
 
@@ -299,6 +294,42 @@
           btn.textContent = 'ส่งข้อมูลทั้งหมด';
         });
     });
+
+    // ส่งข้อมูลผ่าน JSONP: สร้าง <script> tag ที่ src ชี้ไปยัง API พร้อมชื่อ callback
+    // ฝั่ง Apps Script จะตอบกลับมาเป็นโค้ด JS ที่เรียก callback(ผลลัพธ์) ให้เอง
+    // วิธีนี้ไม่ติด CORS เพราะการโหลด <script src> ไม่ได้อยู่ภายใต้ข้อบังคับ CORS แบบ fetch/XHR
+    let jsonpCounter = 0;
+    function jsonpRequest_(url, payload) {
+      return new Promise(function(resolve, reject) {
+        const callbackName = 'jsonpCallback_' + (jsonpCounter++) + '_' + Date.now();
+        const script = document.createElement('script');
+        const timeoutId = setTimeout(function() {
+          cleanup();
+          reject(new Error('การเชื่อมต่อหมดเวลา กรุณาลองใหม่'));
+        }, 15000);
+
+        function cleanup() {
+          clearTimeout(timeoutId);
+          delete window[callbackName];
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        window[callbackName] = function(res) {
+          cleanup();
+          resolve(res);
+        };
+
+        script.onerror = function() {
+          cleanup();
+          reject(new Error('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้'));
+        };
+
+        const qs = 'payload=' + encodeURIComponent(JSON.stringify(payload)) +
+          '&callback=' + encodeURIComponent(callbackName);
+        script.src = url + (url.indexOf('?') === -1 ? '?' : '&') + qs;
+        document.body.appendChild(script);
+      });
+    }
   </script>
 </body>
 </html>
