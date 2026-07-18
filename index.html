@@ -128,22 +128,88 @@
     }
     #msg.success { color: #06c755; }
     #msg.error { color: #d93025; }
+
+    /* จุดสถานะ LIFF เล็กๆ มุมขวาบน แทนแบนเนอร์ debug ตัวใหญ่ */
+    .liff-status {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: #999;
+      background: rgba(255,255,255,0.92);
+      padding: 4px 9px;
+      border-radius: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      z-index: 50;
+      cursor: default;
+    }
+    .liff-status .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ccc;
+      flex-shrink: 0;
+    }
+    .liff-status.ok .dot { background: #06c755; }
+    .liff-status.error .dot { background: #d93025; }
+
+    .round-info {
+      display: none;
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin: 0 0 16px;
+    }
+    .round-info.open {
+      background: #e5f9ee;
+      color: #05793a;
+      border: 1px solid #bdeed2;
+    }
+    .round-info.upcoming, .round-info.none {
+      background: #fff5e0;
+      color: #8a5c00;
+      border: 1px solid #f5deac;
+    }
+    .round-info.checking {
+      background: #f0f1f3;
+      color: #777;
+      border: 1px solid #e2e3e6;
+    }
+    .round-info .note {
+      display: block;
+      margin-top: 4px;
+      font-size: 12px;
+      opacity: 0.85;
+    }
+
+    /* ล็อกฟอร์มตอนไม่อยู่ในรอบที่เปิดรับเบิก */
+    form.locked {
+      opacity: 0.45;
+      pointer-events: none;
+      filter: grayscale(0.3);
+    }
   </style>
 </head>
 <body>
+  <div class="liff-status" id="liffStatus"><span class="dot"></span><span id="liffStatusLabel">LIFF</span></div>
+
   <div class="card">
     <h1>แจ้งเบิกเงินล่วงหน้า</h1>
     <p class="sub">กรอกชื่อหน่วยงาน แล้วเพิ่มรายชื่อพนักงานได้ทีละหลายคน</p>
-    <p id="liffDebug" style="font-size:13px;font-weight:bold;color:#fff;background:#d93025;padding:8px 10px;border-radius:6px;margin:0 0 12px;">กำลังโหลด LIFF...</p>
+    <div id="roundInfo" class="round-info checking" style="display:block;">กำลังตรวจสอบสถานะรอบเบิกจ่าย...</div>
 
-    <form id="reqForm">
+    <form id="reqForm" class="locked">
       <label for="unit">ชื่อหน่วยงาน</label>
       <input type="text" id="unit" required>
 
       <div class="rows-wrap" id="rowsWrap"></div>
 
       <button type="button" class="add-btn" id="addBtn">+ เพิ่มรายการ</button>
-      <button type="submit" class="submit" id="submitBtn">ส่งข้อมูลทั้งหมด</button>
+      <button type="submit" class="submit" id="submitBtn" disabled>กำลังตรวจสอบรอบเบิก...</button>
     </form>
 
     <div id="msg"></div>
@@ -175,26 +241,33 @@
     // เปลี่ยนเป็น URL ของ Apps Script deployment ที่ deploy /exec ล่าสุด
     const API_URL = 'https://script.google.com/macros/s/AKfycbzbH0itXYzBG1YOCITcdTTEa-Sq-tWSnGkXE0UbZ95BSJlOUI5tBZi7gleHy7kx7I8u/exec';
 
+    const liffStatusEl = document.getElementById('liffStatus');
+    const liffStatusLabel = document.getElementById('liffStatusLabel');
+
+    function setLiffStatus(state, label, tooltip) {
+      liffStatusEl.className = 'liff-status' + (state ? ' ' + state : '');
+      liffStatusLabel.textContent = label;
+      liffStatusEl.title = tooltip || '';
+    }
+
     const liffReady = (typeof liff !== 'undefined')
       ? liff.init({ liffId: LIFF_ID }).then(function() { return true; }).catch(function(err) {
           console.error('LIFF init error', err);
-          document.getElementById('liffDebug').textContent = 'LIFF init error: ' + (err && err.message ? err.message : JSON.stringify(err));
+          setLiffStatus('error', 'LIFF ผิดพลาด', err && err.message ? err.message : JSON.stringify(err));
           return false;
         })
       : Promise.resolve(false);
 
     liffReady.then(function(ready) {
-      const dbg = document.getElementById('liffDebug');
       if (typeof liff === 'undefined') {
-        dbg.textContent = 'LIFF SDK: ไม่โหลด (typeof liff === undefined)';
+        setLiffStatus('error', 'ไม่พบ LIFF', 'LIFF SDK ไม่โหลด');
         return;
       }
-      if (!ready) return; // ข้อความ error ถูกใส่ไว้แล้วจาก catch ด้านบน
-      const inClient = liff.isInClient ? liff.isInClient() : 'ไม่มีฟังก์ชันนี้';
+      if (!ready) return; // สถานะ error ถูกตั้งไว้แล้วจาก catch ด้านบน
+      const inClient = liff.isInClient ? liff.isInClient() : false;
       let ctxType = '-';
-      try { ctxType = liff.getContext().type; } catch (e) { ctxType = 'getContext error'; }
-      dbg.style.background = '#0f9d58';
-      dbg.textContent = 'LIFF init: OK, isInClient: ' + inClient + ', context: ' + ctxType;
+      try { ctxType = liff.getContext().type; } catch (e) { ctxType = '-'; }
+      setLiffStatus('ok', 'LIFF', 'isInClient: ' + inClient + ', context: ' + ctxType);
     });
 
     function buildSummaryText(unit, items) {
@@ -240,6 +313,12 @@
 
     form.addEventListener('submit', function(e) {
       e.preventDefault();
+
+      if (!roundIsOpen) {
+        msg.textContent = 'ขณะนี้ไม่อยู่ในรอบที่เปิดรับเบิก ไม่สามารถส่งคำขอได้';
+        msg.className = 'error';
+        return;
+      }
 
       const unit = document.getElementById('unit').value.trim();
       const rowEls = rowsWrap.querySelectorAll('.row-item');
@@ -299,7 +378,7 @@
     // ฝั่ง Apps Script จะตอบกลับมาเป็นโค้ด JS ที่เรียก callback(ผลลัพธ์) ให้เอง
     // วิธีนี้ไม่ติด CORS เพราะการโหลด <script src> ไม่ได้อยู่ภายใต้ข้อบังคับ CORS แบบ fetch/XHR
     let jsonpCounter = 0;
-    function jsonpRequest_(url, payload) {
+    function jsonpGet_(url, params) {
       return new Promise(function(resolve, reject) {
         const callbackName = 'jsonpCallback_' + (jsonpCounter++) + '_' + Date.now();
         const script = document.createElement('script');
@@ -324,12 +403,84 @@
           reject(new Error('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้'));
         };
 
-        const qs = 'payload=' + encodeURIComponent(JSON.stringify(payload)) +
-          '&callback=' + encodeURIComponent(callbackName);
+        const qs = Object.keys(params).map(function(k) {
+          return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+        }).join('&') + '&callback=' + encodeURIComponent(callbackName);
+
         script.src = url + (url.indexOf('?') === -1 ? '?' : '&') + qs;
         document.body.appendChild(script);
       });
     }
+
+    function jsonpRequest_(url, payload) {
+      return jsonpGet_(url, { payload: JSON.stringify(payload) });
+    }
+
+    function escapeHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s).replace(/[&<>"']/g, function(c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function toThaiDate(yyyyMmDd) {
+      if (!yyyyMmDd) return '-';
+      const parts = yyyyMmDd.split('-');
+      if (parts.length !== 3) return yyyyMmDd;
+      return parts[2] + '/' + parts[1] + '/' + parts[0];
+    }
+
+    let roundIsOpen = false;
+
+    function setFormLocked(locked, submitLabel) {
+      roundIsOpen = !locked;
+      form.classList.toggle('locked', locked);
+      btn.disabled = locked;
+      if (submitLabel) btn.textContent = submitLabel;
+    }
+
+    // แสดงสถานะรอบเบิกจ่ายปัจจุบัน/ถัดไป และล็อกฟอร์มถ้าไม่อยู่ในรอบที่เปิดรับ (ไม่แสดงเลขรอบ)
+    function renderRoundInfo(res) {
+      const el = document.getElementById('roundInfo');
+
+      if (!res || !res.success || !res.data || res.data.status === 'none') {
+        el.className = 'round-info none';
+        el.innerHTML = 'ยังไม่มีการกำหนดรอบเบิกจ่าย กรุณาติดต่อธุรการก่อนส่งคำขอเบิก';
+        el.style.display = 'block';
+        setFormLocked(true, 'ยังไม่เปิดรับเบิก');
+        return;
+      }
+
+      const info = res.data;
+      const r = info.round;
+
+      if (info.status === 'open') {
+        el.className = 'round-info open';
+        el.innerHTML = 'เปิดรับเบิกถึงวันที่ <strong>' + toThaiDate(r.closeDate) + '</strong>' +
+          (r.payDate ? ' • กำหนดจ่ายเงินวันที่ <strong>' + toThaiDate(r.payDate) + '</strong>' : '') +
+          (r.note ? '<span class="note">' + escapeHtml(r.note) + '</span>' : '');
+        setFormLocked(false, 'ส่งข้อมูลทั้งหมด');
+      } else {
+        el.className = 'round-info upcoming';
+        el.innerHTML = 'ขณะนี้ปิดรับเบิกชั่วคราว รอบถัดไปเปิดรับวันที่ <strong>' + toThaiDate(r.openDate) + '</strong>' +
+          (r.closeDate ? ' ถึงวันที่ <strong>' + toThaiDate(r.closeDate) + '</strong>' : '') +
+          (r.note ? '<span class="note">' + escapeHtml(r.note) + '</span>' : '');
+        setFormLocked(true, 'ปิดรับเบิกชั่วคราว');
+      }
+      el.style.display = 'block';
+    }
+
+    // โหลดสถานะรอบเบิกจ่ายตอนเปิดหน้า — ถ้าดึงไม่สำเร็จ ฟอร์มยังคงถูกล็อกไว้เพื่อความปลอดภัย
+    jsonpGet_(API_URL, { action: 'roundInfo' })
+      .then(renderRoundInfo)
+      .catch(function(err) {
+        console.error('roundInfo error', err);
+        const el = document.getElementById('roundInfo');
+        el.className = 'round-info none';
+        el.innerHTML = 'ไม่สามารถตรวจสอบสถานะรอบเบิกจ่ายได้ กรุณาลองรีเฟรชหน้าใหม่';
+        el.style.display = 'block';
+        setFormLocked(true, 'ตรวจสอบรอบเบิกไม่สำเร็จ');
+      });
   </script>
 </body>
 </html>
