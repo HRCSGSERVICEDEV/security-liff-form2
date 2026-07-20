@@ -426,26 +426,17 @@
 
     // เก็บ LINE userId ของผู้ส่งไว้ใช้แนบไปกับ payload ตอน submit เพื่อให้ระบบ push message กลับได้
     let currentLineUserId = '';
-    let liffDebugReason = 'ยังไม่เริ่มตรวจสอบ'; // เหตุผลจริงจาก JS ว่าทำไม getProfile ถึงไม่ได้ userId (ไว้โชว์ตอน debug)
     const lineUserIdReady = liffReady.then(function(ready) {
-      if (!ready) { liffDebugReason = 'liff.init() ล้มเหลว'; return ''; }
-      if (typeof liff === 'undefined' || typeof liff.getProfile !== 'function') {
-        liffDebugReason = 'LIFF SDK ไม่มี getProfile (โหลด SDK ไม่สำเร็จ)';
-        return '';
-      }
+      if (!ready) return '';
+      if (typeof liff === 'undefined' || typeof liff.getProfile !== 'function') return '';
       // ต้องล็อกอินอยู่ (LIFF app เปิดผ่าน LINE จะล็อกอินอัตโนมัติ) ถึงจะเรียก getProfile ได้
-      if (liff.isLoggedIn && !liff.isLoggedIn()) {
-        liffDebugReason = 'liff.isLoggedIn() = false (ยังไม่ได้ล็อกอินใน LIFF)';
-        return '';
-      }
+      if (liff.isLoggedIn && !liff.isLoggedIn()) return '';
       return liff.getProfile()
         .then(function(profile) {
           currentLineUserId = profile.userId || '';
-          liffDebugReason = currentLineUserId ? 'สำเร็จ ได้ userId แล้ว' : 'getProfile สำเร็จแต่ userId ว่างเปล่า';
           return currentLineUserId;
         })
         .catch(function(e) {
-          liffDebugReason = 'getProfile() error: ' + (e && e.message ? e.message : JSON.stringify(e));
           console.error('getProfile error', e);
           return '';
         });
@@ -648,7 +639,6 @@
       msg.className = '';
 
       const batchId = generateBatchId_();
-      let sendMessagesOk = null; // null = ไม่ได้ลอง (นอกแอป LINE), true/false = ผลลัพธ์
 
       // รอ userId (ถ้ามี) ก่อน แล้วค่อยส่ง เพื่อให้ระบบ push message ฝั่งเซิร์ฟเวอร์ยิงกลับหาคนถูกได้
       lineUserIdReady
@@ -668,19 +658,16 @@
           msg.textContent = 'บันทึกข้อมูลเรียบร้อย ' + res.count + ' รายการ';
           msg.className = 'success';
 
-          // ยังคงส่งข้อความสรุปเข้าไปในแชท LINE ของผู้ใช้เองอัตโนมัติ (เห็นจริงในแชท เป็นหลักฐานคู่กับ push message)
+          // ส่งข้อความสรุปเข้าไปในแชท LINE ของผู้ใช้เองอัตโนมัติ (เห็นในแชทเป็นหลักฐาน)
           return liffReady.then(function(ready) {
             if (!ready || typeof liff === 'undefined' || !liff.isInClient || !liff.isInClient()) {
               return; // ไม่ได้เปิดผ่าน LINE หรือ liff.init ไม่สำเร็จ ข้ามการส่งข้อความกลับ
             }
-            return liff.sendMessages([{ type: 'text', text: buildSummaryText(unit, items) }])
-              .then(function() { sendMessagesOk = true; })
-              .catch(function(e) {
-                console.error('sendMessages error', e);
-                sendMessagesOk = false;
-              });
+            return liff.sendMessages([{ type: 'text', text: buildSummaryText(unit, items) }]).catch(function(e) {
+              console.error('sendMessages error', e);
+            });
           }).then(function() {
-            showSummaryModal_(unit, items, res, sendMessagesOk);
+            showSummaryModal_(unit, items, res);
           });
         })
         .catch(function(err) {
@@ -706,34 +693,10 @@
         ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
 
-    function showSummaryModal_(unit, items, res, sendMessagesOk) {
+    function showSummaryModal_(unit, items, res) {
       summaryBlock.innerHTML = renderSummaryBlockHtml_(unit, items);
-
-      // แยกแสดงผล 2 กลไกให้ชัดเจน ไม่ปนกัน:
-      // (1) sendMessages = ข้อความที่คุณส่งเข้าไปในแชทเอง (เห็นในแชท แต่ไม่ใช่ "OA ตอบกลับ")
-      // (2) linePushed = push message จริงจากเซิร์ฟเวอร์ (นี่คือตัวที่นับว่า "OA ตอบกลับอัตโนมัติ")
-      const rows = [];
-
-      if (res.linePushed) {
-        rows.push('<div>✅ <b>OA ตอบกลับอัตโนมัติแล้ว</b> (ข้อความจากระบบ พร้อมรายละเอียดที่ส่งไป)</div>');
-      } else {
-        let reason = res.lineError || 'ไม่ทราบสาเหตุ';
-        reason += ' | รายละเอียดฝั่งเครื่อง: ' + liffDebugReason;
-        rows.push('<div>❌ <b>OA ยังไม่ได้ตอบกลับอัตโนมัติ</b><br><span style="font-size:11.5px;opacity:.85">เหตุผล: ' + escapeHtml(reason) + '</span></div>');
-      }
-
-      if (sendMessagesOk) {
-        rows.push('<div style="margin-top:6px">✅ ส่งสำเนาเข้าแชทของคุณเองแล้ว (ไม่ใช่ข้อความจาก OA)</div>');
-      } else if (sendMessagesOk === false) {
-        rows.push('<div style="margin-top:6px">⚠️ ส่งสำเนาเข้าแชทของคุณเองไม่สำเร็จ</div>');
-      }
-
-      lineStatusNote.className = 'line-status-note ' + (res.linePushed ? 'ok' : 'warn');
-      lineStatusNote.innerHTML = rows.join('');
-      if (!res.linePushed) {
-        lineStatusNote.innerHTML += '<div style="margin-top:6px">บันทึกข้อมูลลงระบบสำเร็จแล้วแน่นอน กรุณาตรวจสอบผลกับธุรการหากไม่ได้รับแจ้งอนุมัติ</div>';
-      }
-
+      lineStatusNote.className = 'line-status-note ok';
+      lineStatusNote.innerHTML = 'บันทึกข้อมูลเรียบร้อยแล้ว ระบบจะแจ้งผลการพิจารณาให้ทราบทาง LINE อีกครั้ง';
       summaryModal.classList.add('show');
     }
 
