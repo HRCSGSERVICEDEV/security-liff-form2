@@ -291,6 +291,47 @@
       border-radius: 8px;
       cursor: pointer;
     }
+
+    /* ---------- ป๊อบอัพยืนยันข้อมูลก่อนส่งจริง ---------- */
+    .modal-box h3.confirm-title { color: #222; }
+    .modal-btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .modal-btn-row button {
+      flex: 1;
+      padding: 13px;
+      font-size: 14.5px;
+      font-weight: bold;
+      border-radius: 8px;
+      cursor: pointer;
+      border: none;
+    }
+    .modal-btn-row .btn-back {
+      background: #fff;
+      color: #555;
+      border: 1.5px solid #ddd;
+    }
+    .modal-btn-row .btn-confirm {
+      background: #06c755;
+      color: #fff;
+    }
+    .error-list {
+      background: #fdecea;
+      border: 1px solid #f4c2bc;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #b3261e;
+      text-align: left;
+    }
+    .error-list div { padding: 2px 0; }
+    input.field-error, select.field-error {
+      border-color: #d93025 !important;
+      background: #fff6f5 !important;
+    }
   </style>
 </head>
 <body>
@@ -312,6 +353,20 @@
     </form>
 
     <div id="msg"></div>
+  </div>
+
+  <!-- ป๊อบอัพยืนยันข้อมูลก่อนส่งจริง (ตรวจสอบ/แก้ไขได้ก่อนกดยืนยัน) -->
+  <div class="modal-backdrop" id="confirmModal">
+    <div class="modal-box">
+      <h3 class="confirm-title">ตรวจสอบข้อมูลก่อนส่ง</h3>
+      <p class="hint">กรุณาตรวจสอบความถูกต้องให้ครบถ้วนก่อนยืนยัน</p>
+      <div class="summary-block" id="confirmBlock"></div>
+      <div id="confirmErrorList"></div>
+      <div class="modal-btn-row">
+        <button type="button" class="btn-back" id="confirmBackBtn">ย้อนกลับแก้ไข</button>
+        <button type="button" class="btn-confirm" id="confirmSendBtn">ยืนยันและส่งข้อมูล</button>
+      </div>
+    </div>
   </div>
 
   <!-- ป๊อบอัพสรุปข้อมูลหลังส่งฟอร์มสำเร็จ ให้พนักงานแคปหน้าจอเก็บไว้เป็นหลักฐาน -->
@@ -443,6 +498,85 @@
     addBtn.addEventListener('click', addRow);
     addRow(); // เริ่มต้นด้วย 1 แถว
 
+    // เอาไฮไลต์สีแดงออกทันทีที่ผู้ใช้แก้ไขช่องนั้น (ไม่ต้องรอกดส่งใหม่)
+    form.addEventListener('input', function(e) {
+      if (e.target.classList.contains('field-error')) e.target.classList.remove('field-error');
+    });
+    form.addEventListener('change', function(e) {
+      if (e.target.classList.contains('field-error')) e.target.classList.remove('field-error');
+    });
+
+    function clearFieldErrors_() {
+      form.querySelectorAll('.field-error').forEach(function(el) {
+        el.classList.remove('field-error');
+      });
+    }
+
+    // ตรวจความครบถ้วน/ถูกต้องของข้อมูล คืนค่าเป็น array ข้อความ error (ว่าง = ผ่าน)
+    // พร้อมทำ highlight ช่องที่มีปัญหาไปด้วยในตัว
+    function validateFormData_(unit, items, rowEls) {
+      const errors = [];
+
+      if (!unit) {
+        errors.push('กรุณากรอกชื่อหน่วยงาน');
+        document.getElementById('unit').classList.add('field-error');
+      }
+
+      if (items.length === 0) {
+        errors.push('กรุณาเพิ่มอย่างน้อย 1 รายการ');
+      }
+
+      items.forEach(function(it, i) {
+        const rowEl = rowEls[i];
+        const n = i + 1;
+        if (!it.empId) {
+          errors.push('รายการที่ ' + n + ': ยังไม่ระบุรหัสพนักงาน');
+          rowEl.querySelector('.empId').classList.add('field-error');
+        }
+        if (!it.fullName) {
+          errors.push('รายการที่ ' + n + ': ยังไม่ระบุชื่อ-นามสกุล');
+          rowEl.querySelector('.fullName').classList.add('field-error');
+        }
+        if (!it.position) {
+          errors.push('รายการที่ ' + n + ': ยังไม่เลือกตำแหน่ง');
+          rowEl.querySelector('.position').classList.add('field-error');
+        }
+        const amt = Number(it.amount);
+        if (!it.amount || isNaN(amt) || amt <= 0) {
+          errors.push('รายการที่ ' + n + ': จำนวนเงินไม่ถูกต้อง');
+          rowEl.querySelector('.amount').classList.add('field-error');
+        }
+      });
+
+      return errors;
+    }
+
+    // ใช้ render สรุปข้อมูลร่วมกันทั้งป๊อบอัพ "ยืนยันก่อนส่ง" และ "ส่งสำเร็จแล้ว"
+    function renderSummaryBlockHtml_(unit, items) {
+      let total = 0;
+      const itemsHtml = items.map(function(it, i) {
+        const amt = Number(it.amount) || 0;
+        total += amt;
+        return '<div class="summary-item">' +
+          '<div class="si-name">' + (i + 1) + '. ' + escapeHtml(it.fullName) + ' (' + escapeHtml(it.position) + ')</div>' +
+          '<div class="si-detail">รหัสพนักงาน ' + escapeHtml(it.empId) + ' • ' + amt.toLocaleString() + ' บาท</div>' +
+          '</div>';
+      }).join('');
+
+      return '<div class="s-row"><span class="s-label">หน่วยงาน</span><span>' + escapeHtml(unit) + '</span></div>' +
+        '<div class="s-row"><span class="s-label">วันเวลาที่ส่ง</span><span>' + nowThaiDateTime_() + '</span></div>' +
+        itemsHtml +
+        '<div class="summary-total"><span>รวมทั้งหมด (' + items.length + ' รายการ)</span><span>' + total.toLocaleString() + ' บาท</span></div>';
+    }
+
+    // ---------------- ขั้นที่ 1: ตรวจสอบข้อมูล แล้วเปิดป๊อบอัพให้ยืนยันก่อนส่งจริง ----------------
+    const confirmModal = document.getElementById('confirmModal');
+    const confirmBlock = document.getElementById('confirmBlock');
+    const confirmErrorList = document.getElementById('confirmErrorList');
+    const confirmBackBtn = document.getElementById('confirmBackBtn');
+    const confirmSendBtn = document.getElementById('confirmSendBtn');
+    let pendingSubmitData = null; // { unit, items } ที่รอกดยืนยันจริง
+
     form.addEventListener('submit', function(e) {
       e.preventDefault();
 
@@ -452,9 +586,13 @@
         return;
       }
 
+      clearFieldErrors_();
+      msg.textContent = '';
+      msg.className = '';
+
       const unit = document.getElementById('unit').value.trim();
-      const rowEls = rowsWrap.querySelectorAll('.row-item');
-      const items = Array.from(rowEls).map(function(row) {
+      const rowEls = Array.from(rowsWrap.querySelectorAll('.row-item'));
+      const items = rowEls.map(function(row) {
         return {
           empId: row.querySelector('.empId').value.trim(),
           fullName: row.querySelector('.fullName').value.trim(),
@@ -463,6 +601,37 @@
         };
       });
 
+      const errors = validateFormData_(unit, items, rowEls);
+      if (errors.length > 0) {
+        msg.textContent = 'ข้อมูลไม่ครบถ้วน กรุณาตรวจสอบช่องที่ไฮไลต์สีแดง';
+        msg.className = 'error';
+        // เลื่อนไปยังช่องที่ผิดพลาดช่องแรก ให้แก้ไขได้ทันที
+        const firstBad = form.querySelector('.field-error');
+        if (firstBad) firstBad.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return; // ไม่เปิดป๊อบอัพยืนยัน ต้องกลับไปแก้ก่อน
+      }
+
+      // ข้อมูลครบถ้วน → เปิดป๊อบอัพให้ตรวจทานอีกครั้งก่อนส่งจริง
+      pendingSubmitData = { unit: unit, items: items };
+      confirmBlock.innerHTML = renderSummaryBlockHtml_(unit, items);
+      confirmErrorList.innerHTML = '';
+      confirmModal.classList.add('show');
+    });
+
+    confirmBackBtn.addEventListener('click', function() {
+      confirmModal.classList.remove('show');
+      pendingSubmitData = null; // กลับไปแก้ไขในฟอร์มได้เลย ข้อมูลยังอยู่ครบ
+    });
+
+    confirmSendBtn.addEventListener('click', function() {
+      if (!pendingSubmitData) return;
+      confirmModal.classList.remove('show');
+      doActualSubmit_(pendingSubmitData.unit, pendingSubmitData.items);
+      pendingSubmitData = null;
+    });
+
+    // ---------------- ขั้นที่ 2: ส่งข้อมูลจริงหลังผู้ใช้กดยืนยันในป๊อบอัพแล้ว ----------------
+    function doActualSubmit_(unit, items) {
       btn.disabled = true;
       btn.textContent = 'กำลังส่ง...';
       msg.textContent = '';
@@ -512,7 +681,7 @@
           btn.disabled = false;
           btn.textContent = 'ส่งข้อมูลทั้งหมด';
         });
-    });
+    }
 
     // ---------------- ป๊อบอัพสรุปข้อมูลหลังส่งฟอร์มสำเร็จ ----------------
     const summaryModal = document.getElementById('summaryModal');
@@ -528,29 +697,17 @@
     }
 
     function showSummaryModal_(unit, items, res, sendMessagesOk) {
-      let total = 0;
-      const itemsHtml = items.map(function(it, i) {
-        const amt = Number(it.amount) || 0;
-        total += amt;
-        return '<div class="summary-item">' +
-          '<div class="si-name">' + (i + 1) + '. ' + escapeHtml(it.fullName) + ' (' + escapeHtml(it.position) + ')</div>' +
-          '<div class="si-detail">รหัสพนักงาน ' + escapeHtml(it.empId) + ' • ' + amt.toLocaleString() + ' บาท</div>' +
-          '</div>';
-      }).join('');
+      summaryBlock.innerHTML = renderSummaryBlockHtml_(unit, items);
 
-      summaryBlock.innerHTML =
-        '<div class="s-row"><span class="s-label">หน่วยงาน</span><span>' + escapeHtml(unit) + '</span></div>' +
-        '<div class="s-row"><span class="s-label">วันเวลาที่ส่ง</span><span>' + nowThaiDateTime_() + '</span></div>' +
-        itemsHtml +
-        '<div class="summary-total"><span>รวมทั้งหมด (' + items.length + ' รายการ)</span><span>' + total.toLocaleString() + ' บาท</span></div>';
-
-      // สถานะการแจ้งเข้า LINE OA — บอกตามจริงว่าฝั่งไหนสำเร็จ เพื่อให้ผู้ใช้มั่นใจว่าข้อมูลถึงจริง
+      // สถานะการแจ้งเข้า LINE OA — บอกตามจริงว่าฝั่งไหนสำเร็จ พร้อมเหตุผลถ้ามี เพื่อช่วยไล่ปัญหาได้เอง
       if (res.linePushed || sendMessagesOk) {
         lineStatusNote.className = 'line-status-note ok';
-        lineStatusNote.textContent = '✅ ระบบส่งการแจ้งเตือนเข้า LINE OA ให้อัตโนมัติเรียบร้อยแล้ว';
+        lineStatusNote.textContent = '✅ ระบบส่งการแจ้งเตือนเข้า LINE OA ให้อัตโนมัติเรียบร้อยแล้ว (พร้อมรายละเอียดที่ส่งไป)';
       } else {
         lineStatusNote.className = 'line-status-note warn';
-        lineStatusNote.textContent = '⚠️ บันทึกข้อมูลสำเร็จแล้ว แต่ระบบยังไม่สามารถส่งการแจ้งเตือนเข้า LINE ได้ (อาจเปิดฟอร์มนอกแอป LINE) กรุณาตรวจสอบผลกับธุรการหากไม่ได้รับแจ้งอนุมัติ';
+        let reason = 'อาจเปิดฟอร์มนอกแอป LINE หรือยังไม่ได้ตั้งค่า Channel Access Token';
+        if (res.lineError) reason = res.lineError;
+        lineStatusNote.textContent = '⚠️ บันทึกข้อมูลสำเร็จแล้ว แต่ระบบยังไม่สามารถแจ้งเข้า LINE ได้ (' + reason + ') กรุณาตรวจสอบผลกับธุรการหากไม่ได้รับแจ้งอนุมัติ';
       }
 
       summaryModal.classList.add('show');
