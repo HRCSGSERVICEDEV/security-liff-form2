@@ -426,16 +426,26 @@
 
     // เก็บ LINE userId ของผู้ส่งไว้ใช้แนบไปกับ payload ตอน submit เพื่อให้ระบบ push message กลับได้
     let currentLineUserId = '';
+    let liffDebugReason = 'ยังไม่เริ่มตรวจสอบ'; // เหตุผลจริงจาก JS ว่าทำไม getProfile ถึงไม่ได้ userId (ไว้โชว์ตอน debug)
     const lineUserIdReady = liffReady.then(function(ready) {
-      if (!ready || typeof liff === 'undefined' || typeof liff.getProfile !== 'function') return '';
+      if (!ready) { liffDebugReason = 'liff.init() ล้มเหลว'; return ''; }
+      if (typeof liff === 'undefined' || typeof liff.getProfile !== 'function') {
+        liffDebugReason = 'LIFF SDK ไม่มี getProfile (โหลด SDK ไม่สำเร็จ)';
+        return '';
+      }
       // ต้องล็อกอินอยู่ (LIFF app เปิดผ่าน LINE จะล็อกอินอัตโนมัติ) ถึงจะเรียก getProfile ได้
-      if (liff.isLoggedIn && !liff.isLoggedIn()) return '';
+      if (liff.isLoggedIn && !liff.isLoggedIn()) {
+        liffDebugReason = 'liff.isLoggedIn() = false (ยังไม่ได้ล็อกอินใน LIFF)';
+        return '';
+      }
       return liff.getProfile()
         .then(function(profile) {
           currentLineUserId = profile.userId || '';
+          liffDebugReason = currentLineUserId ? 'สำเร็จ ได้ userId แล้ว' : 'getProfile สำเร็จแต่ userId ว่างเปล่า';
           return currentLineUserId;
         })
         .catch(function(e) {
+          liffDebugReason = 'getProfile() error: ' + (e && e.message ? e.message : JSON.stringify(e));
           console.error('getProfile error', e);
           return '';
         });
@@ -707,6 +717,7 @@
         lineStatusNote.className = 'line-status-note warn';
         let reason = 'อาจเปิดฟอร์มนอกแอป LINE หรือยังไม่ได้ตั้งค่า Channel Access Token';
         if (res.lineError) reason = res.lineError;
+        reason += ' | รายละเอียดฝั่งเครื่อง: ' + liffDebugReason;
         lineStatusNote.textContent = '⚠️ บันทึกข้อมูลสำเร็จแล้ว แต่ระบบยังไม่สามารถแจ้งเข้า LINE ได้ (' + reason + ') กรุณาตรวจสอบผลกับธุรการหากไม่ได้รับแจ้งอนุมัติ';
       }
 
