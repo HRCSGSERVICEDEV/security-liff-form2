@@ -709,16 +709,29 @@
     function showSummaryModal_(unit, items, res, sendMessagesOk) {
       summaryBlock.innerHTML = renderSummaryBlockHtml_(unit, items);
 
-      // สถานะการแจ้งเข้า LINE OA — บอกตามจริงว่าฝั่งไหนสำเร็จ พร้อมเหตุผลถ้ามี เพื่อช่วยไล่ปัญหาได้เอง
-      if (res.linePushed || sendMessagesOk) {
-        lineStatusNote.className = 'line-status-note ok';
-        lineStatusNote.textContent = '✅ ระบบส่งการแจ้งเตือนเข้า LINE OA ให้อัตโนมัติเรียบร้อยแล้ว (พร้อมรายละเอียดที่ส่งไป)';
+      // แยกแสดงผล 2 กลไกให้ชัดเจน ไม่ปนกัน:
+      // (1) sendMessages = ข้อความที่คุณส่งเข้าไปในแชทเอง (เห็นในแชท แต่ไม่ใช่ "OA ตอบกลับ")
+      // (2) linePushed = push message จริงจากเซิร์ฟเวอร์ (นี่คือตัวที่นับว่า "OA ตอบกลับอัตโนมัติ")
+      const rows = [];
+
+      if (res.linePushed) {
+        rows.push('<div>✅ <b>OA ตอบกลับอัตโนมัติแล้ว</b> (ข้อความจากระบบ พร้อมรายละเอียดที่ส่งไป)</div>');
       } else {
-        lineStatusNote.className = 'line-status-note warn';
-        let reason = 'อาจเปิดฟอร์มนอกแอป LINE หรือยังไม่ได้ตั้งค่า Channel Access Token';
-        if (res.lineError) reason = res.lineError;
+        let reason = res.lineError || 'ไม่ทราบสาเหตุ';
         reason += ' | รายละเอียดฝั่งเครื่อง: ' + liffDebugReason;
-        lineStatusNote.textContent = '⚠️ บันทึกข้อมูลสำเร็จแล้ว แต่ระบบยังไม่สามารถแจ้งเข้า LINE ได้ (' + reason + ') กรุณาตรวจสอบผลกับธุรการหากไม่ได้รับแจ้งอนุมัติ';
+        rows.push('<div>❌ <b>OA ยังไม่ได้ตอบกลับอัตโนมัติ</b><br><span style="font-size:11.5px;opacity:.85">เหตุผล: ' + escapeHtml(reason) + '</span></div>');
+      }
+
+      if (sendMessagesOk) {
+        rows.push('<div style="margin-top:6px">✅ ส่งสำเนาเข้าแชทของคุณเองแล้ว (ไม่ใช่ข้อความจาก OA)</div>');
+      } else if (sendMessagesOk === false) {
+        rows.push('<div style="margin-top:6px">⚠️ ส่งสำเนาเข้าแชทของคุณเองไม่สำเร็จ</div>');
+      }
+
+      lineStatusNote.className = 'line-status-note ' + (res.linePushed ? 'ok' : 'warn');
+      lineStatusNote.innerHTML = rows.join('');
+      if (!res.linePushed) {
+        lineStatusNote.innerHTML += '<div style="margin-top:6px">บันทึกข้อมูลลงระบบสำเร็จแล้วแน่นอน กรุณาตรวจสอบผลกับธุรการหากไม่ได้รับแจ้งอนุมัติ</div>';
       }
 
       summaryModal.classList.add('show');
