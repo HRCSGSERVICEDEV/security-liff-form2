@@ -332,6 +332,44 @@
       border-color: #d93025 !important;
       background: #fff6f5 !important;
     }
+    .unit-autocomplete-wrap {
+      position: relative;
+    }
+    .unit-suggest-list {
+      list-style: none;
+      margin: 4px 0 0;
+      padding: 4px 0;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 100%;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+      max-height: 220px;
+      overflow-y: auto;
+      z-index: 20;
+      display: none;
+    }
+    .unit-suggest-list.show {
+      display: block;
+    }
+    .unit-suggest-list li {
+      padding: 10px 12px;
+      font-size: 14px;
+      color: #333;
+      cursor: pointer;
+    }
+    .unit-suggest-list li:hover,
+    .unit-suggest-list li.active {
+      background: #eafaf1;
+    }
+    .unit-suggest-list li mark {
+      background: none;
+      color: #06c755;
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
@@ -344,7 +382,10 @@
 
     <form id="reqForm" class="locked">
       <label for="unit">ชื่อหน่วยงาน</label>
-      <input type="text" id="unit" required>
+      <div class="unit-autocomplete-wrap">
+        <input type="text" id="unit" autocomplete="off" required>
+        <ul class="unit-suggest-list" id="unitSuggestList"></ul>
+      </div>
 
       <div class="rows-wrap" id="rowsWrap"></div>
 
@@ -765,6 +806,102 @@
       if (parts.length !== 3) return yyyyMmDd;
       return parts[2] + '/' + parts[1] + '/' + parts[0];
     }
+
+    // ===== Autocomplete ชื่อหน่วยงาน (ดึงรายชื่อจากชีท "หน่วยงาน") =====
+    let unitMasterList = [];
+    const unitInput = document.getElementById('unit');
+    const unitSuggestList = document.getElementById('unitSuggestList');
+    let unitActiveIndex = -1;
+
+    function escapeRegExp_(s) {
+      return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function hideUnitSuggestions() {
+      unitSuggestList.classList.remove('show');
+      unitSuggestList.innerHTML = '';
+      unitActiveIndex = -1;
+    }
+
+    function renderUnitSuggestions(matches, typed) {
+      unitSuggestList.innerHTML = '';
+      unitActiveIndex = -1;
+      if (matches.length === 0) {
+        unitSuggestList.classList.remove('show');
+        return;
+      }
+      const re = typed ? new RegExp('(' + escapeRegExp_(typed) + ')', 'ig') : null;
+      matches.forEach(function(name) {
+        const li = document.createElement('li');
+        li.textContent = name;
+        if (re) {
+          li.innerHTML = escapeHtml(name).replace(re, '<mark>$1</mark>');
+        }
+        // ใช้ mousedown แทน click กันเหตุการณ์ blur ของ input ปิด list ก่อนที่จะเลือกได้ทัน
+        li.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          unitInput.value = name;
+          hideUnitSuggestions();
+        });
+        unitSuggestList.appendChild(li);
+      });
+      unitSuggestList.classList.add('show');
+    }
+
+    // suggest แบบ "ใกล้เคียง" ด้วยการหาชื่อที่มีคำที่พิมพ์ปรากฏอยู่ตรงไหนก็ได้ (ไม่บังคับให้ต้องขึ้นต้นด้วยคำนั้น)
+    function filterUnitSuggestions() {
+      const typed = unitInput.value.trim();
+      if (!typed || unitMasterList.length === 0) {
+        hideUnitSuggestions();
+        return;
+      }
+      const lower = typed.toLowerCase();
+      const matches = unitMasterList.filter(function(name) {
+        return name.toLowerCase().indexOf(lower) !== -1;
+      }).slice(0, 8);
+      renderUnitSuggestions(matches, typed);
+    }
+
+    unitInput.addEventListener('input', filterUnitSuggestions);
+    unitInput.addEventListener('focus', filterUnitSuggestions);
+    unitInput.addEventListener('blur', function() {
+      setTimeout(hideUnitSuggestions, 150);
+    });
+    unitInput.addEventListener('keydown', function(e) {
+      const items = unitSuggestList.querySelectorAll('li');
+      if (!unitSuggestList.classList.contains('show') || items.length === 0) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        unitActiveIndex = Math.min(unitActiveIndex + 1, items.length - 1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        unitActiveIndex = Math.max(unitActiveIndex - 1, 0);
+      } else if (e.key === 'Enter') {
+        if (unitActiveIndex >= 0) {
+          e.preventDefault();
+          unitInput.value = items[unitActiveIndex].textContent;
+          hideUnitSuggestions();
+        }
+        return;
+      } else if (e.key === 'Escape') {
+        hideUnitSuggestions();
+        return;
+      } else {
+        return;
+      }
+      items.forEach(function(li, i) { li.classList.toggle('active', i === unitActiveIndex); });
+    });
+
+    // โหลดรายชื่อหน่วยงานตอนเปิดหน้า — ถ้าดึงไม่สำเร็จ ฟอร์มยังกรอกชื่อหน่วยงานเองได้ตามปกติ เพียงแต่ไม่มี suggestion
+    jsonpGet_(API_URL, { action: 'unitList' })
+      .then(function(res) {
+        if (res && res.success && Array.isArray(res.data)) {
+          unitMasterList = res.data;
+        }
+      })
+      .catch(function(err) {
+        console.error('unitList error', err);
+      });
 
     let roundIsOpen = false;
 
