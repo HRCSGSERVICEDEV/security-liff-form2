@@ -790,7 +790,13 @@
     }
 
     function jsonpRequest_(url, payload) {
-      return jsonpGet_(url, { payload: JSON.stringify(payload) });
+      const payloadStr = JSON.stringify(payload);
+      // ส่งผ่าน JSONP คือส่งข้อมูลไปกับ URL (query string) ซึ่งมีลิมิตความยาวในทางปฏิบัติ
+      // ถ้ารายการเยอะเกินไปในการส่งครั้งเดียว ให้เตือนก่อนส่ง แทนที่จะให้ค้าง/ล้มเหลวแบบไม่ทราบสาเหตุ
+      if (encodeURIComponent(payloadStr).length > 6000) {
+        return Promise.reject(new Error('ข้อมูลที่กรอกมีขนาดใหญ่เกินไป (รายการเยอะเกินไปในการส่งครั้งเดียว) กรุณาแบ่งส่งเป็นหลายครั้ง เช่นครั้งละไม่เกิน 15-20 คน'));
+      }
+      return jsonpGet_(url, { payload: payloadStr });
     }
 
     function escapeHtml(s) {
