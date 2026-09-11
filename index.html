@@ -250,6 +250,17 @@
       padding: 4px 6px;
       flex-shrink: 0;
     }
+    .photo-missing-warning {
+      background: #fff5e0;
+      color: #8a5c00;
+      border: 1px solid #f5deac;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-top: 12px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      text-align: left;
+    }
 
     /* ---------- ป๊อบอัพสรุปข้อมูลหลังส่งฟอร์ม (ให้แคปหน้าจอเก็บไว้) ---------- */
     .modal-backdrop {
@@ -460,6 +471,7 @@
       <h3 class="confirm-title">ตรวจสอบข้อมูลก่อนส่ง</h3>
       <p class="hint">กรุณาตรวจสอบความถูกต้องให้ครบถ้วนก่อนยืนยัน</p>
       <div class="summary-block" id="confirmBlock"></div>
+      <div class="photo-missing-warning" id="confirmPhotoWarning" style="display:none;"></div>
       <div id="confirmErrorList"></div>
       <div class="modal-btn-row">
         <button type="button" class="btn-back" id="confirmBackBtn">ย้อนกลับแก้ไข</button>
@@ -498,11 +510,9 @@
       <input type="number" class="amount" min="1" step="1" required>
       <label>แนบใบค่าแรง</label>
       <div class="photo-box">
-        <input type="file" accept="image/*" capture="environment" class="photoInputCamera" style="display:none">
-        <input type="file" accept="image/*" class="photoInputGallery" style="display:none">
+        <input type="file" accept="image/*" class="photoInput" style="display:none">
         <div class="photo-btn-row">
-          <button type="button" class="photo-btn photo-camera-btn">📷 ถ่ายภาพใบค่าแรง</button>
-          <button type="button" class="photo-btn photo-gallery-btn">🖼️ เลือกจากคลังภาพ</button>
+          <button type="button" class="photo-btn photo-attach-btn">📷 แนบใบค่าแรง</button>
         </div>
         <div class="photo-preview-wrap">
           <img class="photoPreview" alt="">
@@ -625,27 +635,24 @@
     // เก็บ data URL ของรูปที่เลือกไว้บนตัว element ของแถวนั้นๆ โดยตรง (rowEl._photoDataUrl / rowEl._photoRef)
     // แล้วค่อยอัปโหลดจริงตอนกดยืนยันส่งฟอร์ม เพื่อไม่ให้ค่ารูปที่ยังไม่ได้ใช้ค้างอยู่บน Drive โดยไม่จำเป็น
     function bindPhotoInput_(rowEl) {
-      const cameraInput = rowEl.querySelector('.photoInputCamera');
-      const galleryInput = rowEl.querySelector('.photoInputGallery');
+      const fileInput = rowEl.querySelector('.photoInput');
       const btnRow = rowEl.querySelector('.photo-btn-row');
-      const cameraBtn = rowEl.querySelector('.photo-camera-btn');
-      const galleryBtn = rowEl.querySelector('.photo-gallery-btn');
+      const attachBtn = rowEl.querySelector('.photo-attach-btn');
       const previewWrap = rowEl.querySelector('.photo-preview-wrap');
       const previewImg = rowEl.querySelector('.photoPreview');
       const fileLabel = rowEl.querySelector('.photo-file-label');
       const removeBtn = rowEl.querySelector('.photo-remove-btn');
 
-      cameraBtn.addEventListener('click', function() { cameraInput.click(); });
-      galleryBtn.addEventListener('click', function() { galleryInput.click(); });
+      attachBtn.addEventListener('click', function() { fileInput.click(); });
 
-      function handleSelectedFile_(file) {
+      fileInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
         if (!file) return;
 
         if (file.size > MAX_PHOTO_BYTES_CLIENT) {
           msg.textContent = 'ไฟล์รูปใหญ่เกินไป (ไม่เกิน ' + (MAX_PHOTO_BYTES_CLIENT / (1024 * 1024)) + 'MB ต่อรูป)';
           msg.className = 'error';
-          cameraInput.value = '';
-          galleryInput.value = '';
+          fileInput.value = '';
           return;
         }
 
@@ -659,16 +666,12 @@
           btnRow.style.display = 'none';
         };
         reader.readAsDataURL(file);
-      }
-
-      cameraInput.addEventListener('change', function(e) { handleSelectedFile_(e.target.files[0]); });
-      galleryInput.addEventListener('change', function(e) { handleSelectedFile_(e.target.files[0]); });
+      });
 
       removeBtn.addEventListener('click', function() {
         rowEl._photoDataUrl = null;
         rowEl._photoRef = null;
-        cameraInput.value = '';
-        galleryInput.value = '';
+        fileInput.value = '';
         previewImg.src = '';
         fileLabel.textContent = '';
         previewWrap.style.display = 'none';
@@ -797,6 +800,18 @@
       pendingSubmitData = { unit: unit, items: items };
       confirmBlock.innerHTML = renderSummaryBlockHtml_(unit, items);
       confirmErrorList.innerHTML = '';
+
+      // เตือน (แบบไม่บังคับ) ถ้ามีรายการที่ยังไม่ได้แนบใบค่าแรง — ยังกดยืนยันส่งข้อมูลต่อได้ตามปกติ
+      const missingPhotoNames = items.filter(function(it) { return !it.photoDataUrl; }).map(function(it) { return it.fullName; });
+      const photoWarnEl = document.getElementById('confirmPhotoWarning');
+      if (missingPhotoNames.length > 0) {
+        photoWarnEl.innerHTML = '⚠️ ยังไม่ได้แนบใบค่าแรงสำหรับ: ' + missingPhotoNames.map(escapeHtml).join(', ') + ' — ยังสามารถส่งข้อมูลต่อได้โดยไม่แนบ';
+        photoWarnEl.style.display = 'block';
+      } else {
+        photoWarnEl.style.display = 'none';
+        photoWarnEl.innerHTML = '';
+      }
+
       confirmModal.classList.add('show');
     });
 
