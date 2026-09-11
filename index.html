@@ -193,28 +193,35 @@
       filter: grayscale(0.3);
     }
 
-    /* แนบรูปถ่ายประกอบรายการ */
+    /* แนบใบค่าแรง — ตั้งใจใช้โทนสีน้ำเงิน ให้แยกจากปุ่ม "+ เพิ่มรายการ" (เขียว) อย่างชัดเจน */
     .photo-box {
       margin-top: 10px;
     }
-    .photo-attach-btn {
-      width: 100%;
+    .photo-btn-row {
+      display: flex;
+      gap: 8px;
+    }
+    .photo-btn {
+      flex: 1;
       box-sizing: border-box;
-      padding: 10px;
-      font-size: 13.5px;
+      padding: 10px 6px;
+      font-size: 12.5px;
       font-weight: bold;
-      color: #06c755;
-      background: #fff;
-      border: 1.5px dashed #06c755;
+      color: #2f6fed;
+      background: #eef3ff;
+      border: 1.5px solid #b9cdfb;
       border-radius: 8px;
       cursor: pointer;
+    }
+    .photo-btn:active {
+      background: #dde8fd;
     }
     .photo-preview-wrap {
       display: none;
       align-items: center;
       gap: 10px;
-      background: #fff;
-      border: 1px solid #eee;
+      background: #eef3ff;
+      border: 1px solid #b9cdfb;
       border-radius: 8px;
       padding: 8px;
     }
@@ -229,7 +236,7 @@
     .photo-preview-wrap .photo-file-label {
       flex: 1;
       font-size: 12.5px;
-      color: #555;
+      color: #2f4d99;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -489,10 +496,14 @@
       </select>
       <label>จำนวนเงินที่ต้องการเบิก (บาท)</label>
       <input type="number" class="amount" min="1" step="1" required>
-      <label>รูปถ่ายประกอบรายการ</label>
+      <label>แนบใบค่าแรง</label>
       <div class="photo-box">
-        <input type="file" accept="image/*" capture="environment" class="photoInput" style="display:none">
-        <button type="button" class="photo-attach-btn">+ แนบรูปถ่าย</button>
+        <input type="file" accept="image/*" capture="environment" class="photoInputCamera" style="display:none">
+        <input type="file" accept="image/*" class="photoInputGallery" style="display:none">
+        <div class="photo-btn-row">
+          <button type="button" class="photo-btn photo-camera-btn">📷 ถ่ายภาพใบค่าแรง</button>
+          <button type="button" class="photo-btn photo-gallery-btn">🖼️ เลือกจากคลังภาพ</button>
+        </div>
         <div class="photo-preview-wrap">
           <img class="photoPreview" alt="">
           <span class="photo-file-label"></span>
@@ -614,23 +625,27 @@
     // เก็บ data URL ของรูปที่เลือกไว้บนตัว element ของแถวนั้นๆ โดยตรง (rowEl._photoDataUrl / rowEl._photoRef)
     // แล้วค่อยอัปโหลดจริงตอนกดยืนยันส่งฟอร์ม เพื่อไม่ให้ค่ารูปที่ยังไม่ได้ใช้ค้างอยู่บน Drive โดยไม่จำเป็น
     function bindPhotoInput_(rowEl) {
-      const fileInput = rowEl.querySelector('.photoInput');
-      const attachBtn = rowEl.querySelector('.photo-attach-btn');
+      const cameraInput = rowEl.querySelector('.photoInputCamera');
+      const galleryInput = rowEl.querySelector('.photoInputGallery');
+      const btnRow = rowEl.querySelector('.photo-btn-row');
+      const cameraBtn = rowEl.querySelector('.photo-camera-btn');
+      const galleryBtn = rowEl.querySelector('.photo-gallery-btn');
       const previewWrap = rowEl.querySelector('.photo-preview-wrap');
       const previewImg = rowEl.querySelector('.photoPreview');
       const fileLabel = rowEl.querySelector('.photo-file-label');
       const removeBtn = rowEl.querySelector('.photo-remove-btn');
 
-      attachBtn.addEventListener('click', function() { fileInput.click(); });
+      cameraBtn.addEventListener('click', function() { cameraInput.click(); });
+      galleryBtn.addEventListener('click', function() { galleryInput.click(); });
 
-      fileInput.addEventListener('change', function(e) {
-        const file = e.target.files[0];
+      function handleSelectedFile_(file) {
         if (!file) return;
 
         if (file.size > MAX_PHOTO_BYTES_CLIENT) {
           msg.textContent = 'ไฟล์รูปใหญ่เกินไป (ไม่เกิน ' + (MAX_PHOTO_BYTES_CLIENT / (1024 * 1024)) + 'MB ต่อรูป)';
           msg.className = 'error';
-          fileInput.value = '';
+          cameraInput.value = '';
+          galleryInput.value = '';
           return;
         }
 
@@ -641,19 +656,23 @@
           previewImg.src = reader.result;
           fileLabel.textContent = file.name;
           previewWrap.style.display = 'flex';
-          attachBtn.style.display = 'none';
+          btnRow.style.display = 'none';
         };
         reader.readAsDataURL(file);
-      });
+      }
+
+      cameraInput.addEventListener('change', function(e) { handleSelectedFile_(e.target.files[0]); });
+      galleryInput.addEventListener('change', function(e) { handleSelectedFile_(e.target.files[0]); });
 
       removeBtn.addEventListener('click', function() {
         rowEl._photoDataUrl = null;
         rowEl._photoRef = null;
-        fileInput.value = '';
+        cameraInput.value = '';
+        galleryInput.value = '';
         previewImg.src = '';
         fileLabel.textContent = '';
         previewWrap.style.display = 'none';
-        attachBtn.style.display = 'block';
+        btnRow.style.display = 'flex';
       });
     }
 
@@ -716,7 +735,7 @@
       const itemsHtml = items.map(function(it, i) {
         const amt = Number(it.amount) || 0;
         total += amt;
-        const photoNote = it.photoDataUrl ? '<div class="si-detail">📷 แนบรูปถ่ายแล้ว</div>' : '';
+        const photoNote = it.photoDataUrl ? '<div class="si-detail">📷 แนบใบค่าแรงแล้ว</div>' : '';
         return '<div class="summary-item">' +
           '<div class="si-name">' + (i + 1) + '. ' + escapeHtml(it.fullName) + ' (' + escapeHtml(it.position) + ')</div>' +
           '<div class="si-detail">รหัสพนักงาน ' + escapeHtml(it.empId) + ' • ' + amt.toLocaleString() + ' บาท</div>' +
