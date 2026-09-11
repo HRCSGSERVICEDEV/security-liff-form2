@@ -193,6 +193,57 @@
       filter: grayscale(0.3);
     }
 
+    /* แนบรูปถ่ายประกอบรายการ */
+    .photo-box {
+      margin-top: 10px;
+    }
+    .photo-attach-btn {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      font-size: 13.5px;
+      font-weight: bold;
+      color: #06c755;
+      background: #fff;
+      border: 1.5px dashed #06c755;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .photo-preview-wrap {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      background: #fff;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      padding: 8px;
+    }
+    .photo-preview-wrap img {
+      width: 52px;
+      height: 52px;
+      object-fit: cover;
+      border-radius: 6px;
+      flex-shrink: 0;
+      background: #eee;
+    }
+    .photo-preview-wrap .photo-file-label {
+      flex: 1;
+      font-size: 12.5px;
+      color: #555;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .photo-remove-btn {
+      background: none;
+      border: none;
+      color: #d93025;
+      font-size: 12.5px;
+      cursor: pointer;
+      padding: 4px 6px;
+      flex-shrink: 0;
+    }
+
     /* ---------- ป๊อบอัพสรุปข้อมูลหลังส่งฟอร์ม (ให้แคปหน้าจอเก็บไว้) ---------- */
     .modal-backdrop {
       display: none;
@@ -438,6 +489,16 @@
       </select>
       <label>จำนวนเงินที่ต้องการเบิก (บาท)</label>
       <input type="number" class="amount" min="1" step="1" required>
+      <label>รูปถ่ายประกอบรายการ</label>
+      <div class="photo-box">
+        <input type="file" accept="image/*" capture="environment" class="photoInput" style="display:none">
+        <button type="button" class="photo-attach-btn">+ แนบรูปถ่าย</button>
+        <div class="photo-preview-wrap">
+          <img class="photoPreview" alt="">
+          <span class="photo-file-label"></span>
+          <button type="button" class="photo-remove-btn">ลบรูป</button>
+        </div>
+      </div>
     </div>
   </template>
 
@@ -447,6 +508,8 @@
     const LIFF_ID = '2010742029-t836X301';
     // เปลี่ยนเป็น URL ของ Apps Script deployment ที่ deploy /exec ล่าสุด
     const API_URL = 'https://script.google.com/macros/s/AKfycbzbH0itXYzBG1YOCITcdTTEa-Sq-tWSnGkXE0UbZ95BSJlOUI5tBZi7gleHy7kx7I8u/exec';
+    // เพดานขนาดไฟล์รูปที่ยอมให้แนบต่อ 1 รายการ (ตรงกับ MAX_PHOTO_BYTES ฝั่ง Code.gs) กันเลือกไฟล์ใหญ่เกินไปตั้งแต่ต้นทาง
+    const MAX_PHOTO_BYTES_CLIENT = 5 * 1024 * 1024; // 5MB
 
     const liffStatusEl = document.getElementById('liffStatus');
     const liffStatusLabel = document.getElementById('liffStatusLabel');
@@ -499,12 +562,18 @@
       return 'b_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
     }
 
+    // สร้างรหัสอ้างอิงรูปแบบสุ่ม ใช้ฝังท้ายชื่อไฟล์ตอนอัปโหลดรูปไปที่ Drive (ให้ตรงกับที่ resolveWageSlipUrlByRef_ ฝั่ง Code.gs ค้นหา)
+    function generatePhotoRef_() {
+      return 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
     function buildSummaryText(unit, items) {
       let total = 0;
       const lines = items.map(function(it, i) {
         const amt = Number(it.amount) || 0;
         total += amt;
-        return (i + 1) + '. ' + it.fullName + ' (' + it.position + ') ' + amt.toLocaleString() + ' บาท';
+        return (i + 1) + '. ' + it.fullName + ' (' + it.position + ') ' + amt.toLocaleString() + ' บาท' +
+          (it.photoRef ? ' 📷' : '');
       });
       return 'แจ้งเบิกเงินล่วงหน้า\nหน่วยงาน: ' + unit + '\n' +
         lines.join('\n') +
@@ -527,6 +596,7 @@
         node.remove();
         renumberRows();
       });
+      bindPhotoInput_(node);
     }
 
     function renumberRows() {
@@ -539,6 +609,53 @@
 
     addBtn.addEventListener('click', addRow);
     addRow(); // เริ่มต้นด้วย 1 แถว
+
+    // ===== แนบรูปถ่ายประกอบรายการ (ต่อ 1 รายการพนักงาน) =====
+    // เก็บ data URL ของรูปที่เลือกไว้บนตัว element ของแถวนั้นๆ โดยตรง (rowEl._photoDataUrl / rowEl._photoRef)
+    // แล้วค่อยอัปโหลดจริงตอนกดยืนยันส่งฟอร์ม เพื่อไม่ให้ค่ารูปที่ยังไม่ได้ใช้ค้างอยู่บน Drive โดยไม่จำเป็น
+    function bindPhotoInput_(rowEl) {
+      const fileInput = rowEl.querySelector('.photoInput');
+      const attachBtn = rowEl.querySelector('.photo-attach-btn');
+      const previewWrap = rowEl.querySelector('.photo-preview-wrap');
+      const previewImg = rowEl.querySelector('.photoPreview');
+      const fileLabel = rowEl.querySelector('.photo-file-label');
+      const removeBtn = rowEl.querySelector('.photo-remove-btn');
+
+      attachBtn.addEventListener('click', function() { fileInput.click(); });
+
+      fileInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (file.size > MAX_PHOTO_BYTES_CLIENT) {
+          msg.textContent = 'ไฟล์รูปใหญ่เกินไป (ไม่เกิน ' + (MAX_PHOTO_BYTES_CLIENT / (1024 * 1024)) + 'MB ต่อรูป)';
+          msg.className = 'error';
+          fileInput.value = '';
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function() {
+          rowEl._photoDataUrl = reader.result;
+          if (!rowEl._photoRef) rowEl._photoRef = generatePhotoRef_();
+          previewImg.src = reader.result;
+          fileLabel.textContent = file.name;
+          previewWrap.style.display = 'flex';
+          attachBtn.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+      });
+
+      removeBtn.addEventListener('click', function() {
+        rowEl._photoDataUrl = null;
+        rowEl._photoRef = null;
+        fileInput.value = '';
+        previewImg.src = '';
+        fileLabel.textContent = '';
+        previewWrap.style.display = 'none';
+        attachBtn.style.display = 'block';
+      });
+    }
 
     // เอาไฮไลต์สีแดงออกทันทีที่ผู้ใช้แก้ไขช่องนั้น (ไม่ต้องรอกดส่งใหม่)
     form.addEventListener('input', function(e) {
@@ -599,9 +716,11 @@
       const itemsHtml = items.map(function(it, i) {
         const amt = Number(it.amount) || 0;
         total += amt;
+        const photoNote = it.photoDataUrl ? '<div class="si-detail">📷 แนบรูปถ่ายแล้ว</div>' : '';
         return '<div class="summary-item">' +
           '<div class="si-name">' + (i + 1) + '. ' + escapeHtml(it.fullName) + ' (' + escapeHtml(it.position) + ')</div>' +
           '<div class="si-detail">รหัสพนักงาน ' + escapeHtml(it.empId) + ' • ' + amt.toLocaleString() + ' บาท</div>' +
+          photoNote +
           '</div>';
       }).join('');
 
@@ -639,7 +758,9 @@
           empId: row.querySelector('.empId').value.trim(),
           fullName: row.querySelector('.fullName').value.trim(),
           position: row.querySelector('.position').value,
-          amount: row.querySelector('.amount').value
+          amount: row.querySelector('.amount').value,
+          photoDataUrl: row._photoDataUrl || '',
+          photoRef: row._photoRef || ''
         };
       });
 
@@ -672,6 +793,21 @@
       pendingSubmitData = null;
     });
 
+    // อัปโหลดรูปถ่ายของ 1 รายการไปที่ Drive ล่วงหน้า (ก่อนเรียก submitRequest) ผ่าน POST แบบ no-cors
+    // เพื่อเลี่ยงข้อจำกัดความยาว URL ของ JSONP — ฝั่ง client อ่าน response กลับไม่ได้ (ตามข้อจำกัดของ Apps Script
+    // เวลาไม่มี CORS header) แต่ browser จะรอจนคำขอนี้ทำงานเสร็จฝั่งเซิร์ฟเวอร์ก่อนถึงจะ resolve promise นี้
+    // ถ้าอัปโหลดล้มเหลวจะไม่ throw ต่อ เพื่อไม่ให้กระทบการส่งคำขอเบิกทั้งฟอร์ม (แค่รายการนั้นจะไม่มีรูปแนบ)
+    function uploadWageSlipPhoto_(photoRef, empId, dataUrl) {
+      return fetch(API_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'uploadWageSlip', photoRef: photoRef, empId: empId, imageBase64: dataUrl })
+      }).catch(function(err) {
+        console.error('uploadWageSlipPhoto_ error', err);
+      });
+    }
+
     // ---------------- ขั้นที่ 2: ส่งข้อมูลจริงหลังผู้ใช้กดยืนยันในป๊อบอัพแล้ว ----------------
     function doActualSubmit_(unit, items) {
       btn.disabled = true;
@@ -681,14 +817,29 @@
 
       const batchId = generateBatchId_();
 
-      // รอ userId (ถ้ามี) ก่อน แล้วค่อยส่ง เพื่อให้ระบบ push message ฝั่งเซิร์ฟเวอร์ยิงกลับหาคนถูกได้
-      lineUserIdReady
+      // อัปโหลดรูปของทุกรายการที่แนบไว้ (ถ้ามี) ให้เสร็จก่อน แล้วค่อยส่งคำขอเบิกจริง
+      const photoUploads = items
+        .filter(function(it) { return it.photoDataUrl && it.photoRef; })
+        .map(function(it) { return uploadWageSlipPhoto_(it.photoRef, it.empId, it.photoDataUrl); });
+
+      // รอทั้งรูปอัปโหลดเสร็จ และ userId (ถ้ามี) ก่อน แล้วค่อยส่ง เพื่อให้ระบบ push message ฝั่งเซิร์ฟเวอร์ยิงกลับหาคนถูกได้
+      Promise.all([Promise.all(photoUploads), lineUserIdReady])
         .then(function() {
           // ยิงผ่าน JSONP (<script> tag) แทน fetch() เพื่อเลี่ยงปัญหา CORS
           // ที่เกิดระหว่าง redirect chain ของ Apps Script (script.google.com -> googleusercontent.com)
+          // ส่งเฉพาะ photoRef (รหัสอ้างอิงสั้นๆ) ไปด้วย ไม่ส่งตัวรูป (base64) ซ้ำอีกครั้ง เพราะจะเกินลิมิตความยาว URL
+          const payloadItems = items.map(function(it) {
+            return {
+              empId: it.empId,
+              fullName: it.fullName,
+              position: it.position,
+              amount: it.amount,
+              photoRef: it.photoRef || undefined
+            };
+          });
           return jsonpRequest_(API_URL, {
             unit: unit,
-            items: items,
+            items: payloadItems,
             userId: currentLineUserId,
             batchId: batchId
           });
