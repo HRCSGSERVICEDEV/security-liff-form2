@@ -1000,19 +1000,64 @@
       pendingSubmitData = null;
     });
 
-    // อัปโหลดรูปถ่ายของ 1 รายการไปที่ Drive ล่วงหน้า (ก่อนเรียก submitRequest) ผ่าน POST แบบ no-cors
-    // เพื่อเลี่ยงข้อจำกัดความยาว URL ของ JSONP — ฝั่ง client อ่าน response กลับไม่ได้ (ตามข้อจำกัดของ Apps Script
-    // เวลาไม่มี CORS header) แต่ browser จะรอจนคำขอนี้ทำงานเสร็จฝั่งเซิร์ฟเวอร์ก่อนถึงจะ resolve promise นี้
-    // ถ้าอัปโหลดล้มเหลวจะไม่ throw ต่อ เพื่อไม่ให้กระทบการส่งคำขอเบิกทั้งฟอร์ม (แค่รายการนั้นจะไม่มีรูปแนบ)
+    // อัปโหลดรูปถ่ายของ 1 รายการไปที่ Drive ล่วงหน้า (ก่อนเรียก submitRequest)
+    //
+    // เดิมใช้ fetch(POST, mode:'no-cors') ไปที่ doPost() แต่พบว่าในบางสภาพแวดล้อม (เช่นเปิดผ่าน LINE LIFF
+    // in-app browser) request แบบนี้ไม่ถึงเซิร์ฟเวอร์เลยสักครั้ง (ไม่มี execution log เกิดขึ้นเลย) ในขณะที่
+    // request แบบ GET ผ่าน <script src> (JSONP) ที่ submitRequest/roundInfo/unitList ใช้อยู่แล้วทำงานได้ปกติ
+    // จึงเปลี่ยนมาอัปโหลดรูปด้วยวิธีเดียวกัน (JSONP) แทน โดยแบ่งข้อมูล base64 ของรูปเป็นชิ้นเล็ก ๆ
+    // (ชิ้นละไม่เกิน PHOTO_CHUNK_SIZE ตัวอักษร กันเกินลิมิตความยาว URL) ส่งทีละชิ้นตามลำดับ แล้วปิดท้ายด้วย
+    // การเรียก action:'uploadFinish' ให้เซิร์ฟเวอร์ประกอบร่างกลับเป็นรูปเดียวแล้วเขียนลง Drive จริง
+    // (ดู handleJsonpUploadChunk_ / handleJsonpUploadFinish_ ฝั่ง Code.gs ประกอบ)
+    //
+    // ข้อดีอีกอย่างของ JSONP คือฝั่ง client อ่าน response กลับได้จริง (ต่างจาก no-cors เดิมที่อ่านไม่ได้เลย)
+    // จึงรู้ผลจริงว่าอัปโหลดสำเร็จหรือไม่ แต่ถึงล้มเหลวก็ยังไม่ throw ต่อ เพื่อไม่ให้กระทบการส่งคำขอเบิกทั้งฟอร์ม
+    // (แค่รายการนั้นจะไม่มีรูปแนบ)
+    const PHOTO_CHUNK_SIZE = 3000; // ตัวอักษร base64 ต่อ 1 ชิ้น
+
     function uploadWageSlipPhoto_(photoRef, empId, dataUrl) {
-      return fetch(API_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'uploadWageSlip', photoRef: photoRef, empId: empId, imageBase64: dataUrl })
-      }).catch(function(err) {
-        console.error('uploadWageSlipPhoto_ error', err);
+      const match = String(dataUrl).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!match) {
+        console.error('uploadWageSlipPhoto_: รูปแบบ data URL ไม่ถูกต้อง');
+        return Promise.resolve();
+      }
+      const mime = match[1];
+      const base64Data = match[2];
+
+      const chunks = [];
+      for (let i = 0; i < base64Data.length; i += PHOTO_CHUNK_SIZE) {
+        chunks.push(base64Data.slice(i, i + PHOTO_CHUNK_SIZE));
+      }
+      const total = chunks.length;
+
+      // ส่งทีละชิ้นตามลำดับ (ไม่ยิงพร้อมกันทั้งหมด กันเซิร์ฟเวอร์โดนถล่มพร้อมกันหลายคำขอในคราวเดียว)
+      let chain = Promise.resolve();
+      chunks.forEach(function(chunk, idx) {
+        chain = chain.then(function() {
+          return jsonpGet_(API_URL, {
+            action: 'uploadChunk',
+            photoRef: photoRef,
+            idx: idx,
+            total: total,
+            mime: mime,
+            empId: empId,
+            chunk: chunk
+          });
+        });
       });
+
+      return chain
+        .then(function() {
+          return jsonpGet_(API_URL, { action: 'uploadFinish', photoRef: photoRef });
+        })
+        .then(function(res) {
+          if (!res || !res.success) {
+            console.error('uploadWageSlipPhoto_ finish error', res && res.message);
+          }
+        })
+        .catch(function(err) {
+          console.error('uploadWageSlipPhoto_ error', err);
+        });
     }
 
     // ---------------- โอเวอร์เลย์ระหว่างส่งข้อมูล ----------------
