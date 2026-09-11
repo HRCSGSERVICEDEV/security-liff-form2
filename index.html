@@ -634,8 +634,11 @@
     // ทำให้ทั้งการอัปโหลดผ่านเน็ตมือถือ และการประมวลผลฝั่งเซิร์ฟเวอร์ (ถอดรหัส + เขียนไฟล์ลง Drive) ใช้เวลานาน
     // ใบค่าแรงแค่ต้องอ่านตัวเลข/รายละเอียดออกเท่านั้น ไม่จำเป็นต้องคมชัดระดับไฟล์ต้นฉบับ
     // จึงย่อขนาดรูป + ลดคุณภาพ JPEG ลงในเครื่องผู้ใช้ก่อนส่ง ช่วยให้เร็วขึ้นมาก (มักลดขนาดไฟล์ได้ 80-95%)
-    const PHOTO_MAX_DIMENSION = 1280; // px ด้านที่ยาวที่สุดของรูปหลังย่อ (พอสำหรับอ่านตัวเลขในใบค่าแรงได้ชัดเจน)
-    const PHOTO_JPEG_QUALITY = 0.6;   // คุณภาพ JPEG หลังบีบอัด (0-1)
+    const PHOTO_MAX_DIMENSION = 900;  // px ด้านที่ยาวที่สุดของรูปหลังย่อ (พอสำหรับอ่านตัวเลขในใบค่าแรงได้)
+    const PHOTO_JPEG_QUALITY = 0.45;  // คุณภาพ JPEG หลังบีบอัด (0-1)
+    // เดิมตั้งไว้ 1280px/0.6 ทำให้รูป 1 ใบมักมีขนาด base64 หลายแสนตัวอักษร พอส่งผ่าน JSONP แบบแบ่งชิ้น
+    // (ดู uploadWageSlipPhoto_ ด้านล่าง) กลายเป็นต้องยิงหลายสิบ-เป็นร้อยครั้งต่อ 1 รูป ช้ามากและบางครั้งไม่จบ
+    // (บางชิ้นหลุดหาย ไฟล์เลยไม่ถูกสร้าง) ลดขนาด/คุณภาพลงเพื่อให้จำนวนชิ้นที่ต้องส่งน้อยลงมาก
 
     // แปลงไฟล์รูปเป็น data URL ที่ถูกย่อขนาด+บีบอัดคุณภาพแล้ว โดยใช้ canvas วาดรูปใหม่ในขนาดที่เล็กลง
     // คืนค่าเป็น Promise<string> (data:image/jpeg;base64,...)
@@ -1000,26 +1003,71 @@
       pendingSubmitData = null;
     });
 
+    const PHOTO_CHUNK_SIZE = 6000;    // ตัวอักษร base64 ต่อ 1 ชิ้น (เพิ่มจากเดิม 3000 เพื่อลดจำนวนรอบที่ต้องยิง)
+    const PHOTO_CHUNK_CONCURRENCY = 4; // ส่งพร้อมกันได้สูงสุดกี่ชิ้นต่อครั้ง (ชิ้นเป็นอิสระต่อกัน ลำดับไม่สำคัญ)
+    const PHOTO_CHUNK_MAX_RETRY = 2;   // ถ้าชิ้นไหนส่งไม่สำเร็จ ลองซ้ำได้กี่ครั้งก่อนจะถือว่าอัปโหลดรูปนี้ล้มเหลว
+
+    // ส่งชิ้นเดียวโดยลองซ้ำถ้าเจอ error (เช่น เน็ตสะดุดชั่วคราว) ก่อนจะถือว่าล้มเหลวจริง
+    function sendPhotoChunkWithRetry_(params) {
+      let attempt = 0;
+      function attemptOnce() {
+        attempt++;
+        return jsonpGet_(API_URL, params).catch(function(err) {
+          if (attempt > PHOTO_CHUNK_MAX_RETRY) throw err;
+          return attemptOnce();
+        });
+      }
+      return attemptOnce();
+    }
+
+    // รันงานหลายชิ้นแบบจำกัดจำนวนที่ทำพร้อมกัน (concurrency pool) แทนที่จะทำทีละชิ้นเรียงกันไปเรื่อยๆ
+    // (ทีละชิ้นช้ามากเมื่อมีหลายสิบชิ้น เพราะแต่ละชิ้นต้องรอ round-trip เต็มๆ ก่อนเริ่มชิ้นถัดไป)
+    function runWithConcurrency_(tasks, limit) {
+      return new Promise(function(resolve, reject) {
+        let nextIndex = 0;
+        let active = 0;
+        let done = false;
+        function runNext() {
+          if (done) return;
+          if (nextIndex >= tasks.length) {
+            if (active === 0) { done = true; resolve(); }
+            return;
+          }
+          const idx = nextIndex++;
+          active++;
+          tasks[idx]()
+            .then(function() {
+              active--;
+              runNext();
+            })
+            .catch(function(err) {
+              if (!done) { done = true; reject(err); }
+            });
+        }
+        const starters = Math.min(limit, tasks.length);
+        for (let i = 0; i < starters; i++) runNext();
+        if (tasks.length === 0) resolve();
+      });
+    }
+
     // อัปโหลดรูปถ่ายของ 1 รายการไปที่ Drive ล่วงหน้า (ก่อนเรียก submitRequest)
     //
-    // เดิมใช้ fetch(POST, mode:'no-cors') ไปที่ doPost() แต่พบว่าในบางสภาพแวดล้อม (เช่นเปิดผ่าน LINE LIFF
-    // in-app browser) request แบบนี้ไม่ถึงเซิร์ฟเวอร์เลยสักครั้ง (ไม่มี execution log เกิดขึ้นเลย) ในขณะที่
-    // request แบบ GET ผ่าน <script src> (JSONP) ที่ submitRequest/roundInfo/unitList ใช้อยู่แล้วทำงานได้ปกติ
+    // เดิมใช้ fetch(POST, mode:'no-cors') ไปที่ doPost() แต่พบว่าในแอป LINE (LIFF in-app browser)
+    // request แบบนี้ไม่ถึงเซิร์ฟเวอร์เลยสักครั้ง (Executions log ว่างเปล่าทุกครั้ง) ในขณะที่ request แบบ GET
+    // ผ่าน <script src> (JSONP) ที่ submitRequest/roundInfo/unitList ใช้อยู่แล้วทำงานได้ปกติในแอป LINE
     // จึงเปลี่ยนมาอัปโหลดรูปด้วยวิธีเดียวกัน (JSONP) แทน โดยแบ่งข้อมูล base64 ของรูปเป็นชิ้นเล็ก ๆ
-    // (ชิ้นละไม่เกิน PHOTO_CHUNK_SIZE ตัวอักษร กันเกินลิมิตความยาว URL) ส่งทีละชิ้นตามลำดับ แล้วปิดท้ายด้วย
-    // การเรียก action:'uploadFinish' ให้เซิร์ฟเวอร์ประกอบร่างกลับเป็นรูปเดียวแล้วเขียนลง Drive จริง
+    // (ชิ้นละไม่เกิน PHOTO_CHUNK_SIZE ตัวอักษร กันเกินลิมิตความยาว URL) ส่งพร้อมกันได้สูงสุด
+    // PHOTO_CHUNK_CONCURRENCY ชิ้น (ชิ้นเป็นอิสระต่อกัน เซิร์ฟเวอร์เก็บแยกตาม index ลำดับที่มาถึงไม่สำคัญ)
+    // แล้วปิดท้ายด้วยการเรียก action:'uploadFinish' ให้เซิร์ฟเวอร์ประกอบร่างกลับเป็นรูปเดียวแล้วเขียนลง Drive จริง
     // (ดู handleJsonpUploadChunk_ / handleJsonpUploadFinish_ ฝั่ง Code.gs ประกอบ)
     //
     // ข้อดีอีกอย่างของ JSONP คือฝั่ง client อ่าน response กลับได้จริง (ต่างจาก no-cors เดิมที่อ่านไม่ได้เลย)
-    // จึงรู้ผลจริงว่าอัปโหลดสำเร็จหรือไม่ แต่ถึงล้มเหลวก็ยังไม่ throw ต่อ เพื่อไม่ให้กระทบการส่งคำขอเบิกทั้งฟอร์ม
-    // (แค่รายการนั้นจะไม่มีรูปแนบ)
-    const PHOTO_CHUNK_SIZE = 3000; // ตัวอักษร base64 ต่อ 1 ชิ้น
-
+    // ฟังก์ชันนี้จึง reject จริงถ้าอัปโหลดล้มเหลว (หลังลองซ้ำแล้ว) ให้ doActualSubmit_ นำไปแจ้งผู้ใช้ต่อได้
+    // แทนที่จะเงียบแล้วทำเหมือนสำเร็จ (ของเดิมที่ debug ไม่ได้เลยว่ารูปหายไปตอนไหน)
     function uploadWageSlipPhoto_(photoRef, empId, dataUrl) {
       const match = String(dataUrl).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
       if (!match) {
-        console.error('uploadWageSlipPhoto_: รูปแบบ data URL ไม่ถูกต้อง');
-        return Promise.resolve();
+        return Promise.reject(new Error('รูปแบบไฟล์รูปไม่ถูกต้อง'));
       }
       const mime = match[1];
       const base64Data = match[2];
@@ -1030,11 +1078,9 @@
       }
       const total = chunks.length;
 
-      // ส่งทีละชิ้นตามลำดับ (ไม่ยิงพร้อมกันทั้งหมด กันเซิร์ฟเวอร์โดนถล่มพร้อมกันหลายคำขอในคราวเดียว)
-      let chain = Promise.resolve();
-      chunks.forEach(function(chunk, idx) {
-        chain = chain.then(function() {
-          return jsonpGet_(API_URL, {
+      const tasks = chunks.map(function(chunk, idx) {
+        return function() {
+          return sendPhotoChunkWithRetry_({
             action: 'uploadChunk',
             photoRef: photoRef,
             idx: idx,
@@ -1043,20 +1089,17 @@
             empId: empId,
             chunk: chunk
           });
-        });
+        };
       });
 
-      return chain
+      return runWithConcurrency_(tasks, PHOTO_CHUNK_CONCURRENCY)
         .then(function() {
-          return jsonpGet_(API_URL, { action: 'uploadFinish', photoRef: photoRef });
+          return sendPhotoChunkWithRetry_({ action: 'uploadFinish', photoRef: photoRef });
         })
         .then(function(res) {
           if (!res || !res.success) {
-            console.error('uploadWageSlipPhoto_ finish error', res && res.message);
+            throw new Error((res && res.message) || 'อัปโหลดรูปไม่สำเร็จ');
           }
-        })
-        .catch(function(err) {
-          console.error('uploadWageSlipPhoto_ error', err);
         });
     }
 
@@ -1089,8 +1132,17 @@
       const batchId = generateBatchId_();
 
       // อัปโหลดรูปของทุกรายการที่แนบไว้ (ถ้ามี) ให้เสร็จก่อน แล้วค่อยส่งคำขอเบิกจริง
+      // ใช้ allSettled แทน all: รูปที่อัปโหลดไม่สำเร็จ (แม้ลองซ้ำแล้ว) จะไม่ทำให้การส่งคำขอเบิกทั้งฟอร์มล้มเหลวไปด้วย
+      // (ยังบันทึกรายการเบิกได้ปกติ) แต่จะรวบรวมชื่อไว้แจ้งเตือนผู้ใช้ทันทีหลังส่งเสร็จ แทนที่จะเงียบแล้วรูปหายไปเฉยๆ
       const itemsWithPhoto = items.filter(function(it) { return it.photoDataUrl && it.photoRef; });
-      const photoUploads = itemsWithPhoto.map(function(it) { return uploadWageSlipPhoto_(it.photoRef, it.empId, it.photoDataUrl); });
+      const photoUploads = itemsWithPhoto.map(function(it) {
+        return uploadWageSlipPhoto_(it.photoRef, it.empId, it.photoDataUrl)
+          .then(function() { return { fullName: it.fullName, ok: true }; })
+          .catch(function(err) {
+            console.error('uploadWageSlipPhoto_ error (' + it.fullName + ')', err);
+            return { fullName: it.fullName, ok: false, message: err.message };
+          });
+      });
 
       if (photoUploads.length > 0) {
         showLoading_('กำลังอัปโหลดรูปที่แนบ (' + photoUploads.length + ' รูป)');
@@ -1098,9 +1150,14 @@
         showLoading_('กำลังบันทึกข้อมูล');
       }
 
+      let failedPhotoNames = [];
+
       // รอทั้งรูปอัปโหลดเสร็จ และ userId (ถ้ามี) ก่อน แล้วค่อยส่ง เพื่อให้ระบบ push message ฝั่งเซิร์ฟเวอร์ยิงกลับหาคนถูกได้
       Promise.all([Promise.all(photoUploads), lineUserIdReady])
-        .then(function() {
+        .then(function(results) {
+          const photoResults = results[0];
+          failedPhotoNames = photoResults.filter(function(r) { return !r.ok; }).map(function(r) { return r.fullName; });
+
           showLoading_('กำลังบันทึกข้อมูล');
           // ยิงผ่าน JSONP (<script> tag) แทน fetch() เพื่อเลี่ยงปัญหา CORS
           // ที่เกิดระหว่าง redirect chain ของ Apps Script (script.google.com -> googleusercontent.com)
@@ -1125,7 +1182,10 @@
           if (!res.success) throw new Error(res.message || 'เกิดข้อผิดพลาดไม่ทราบสาเหตุ');
 
           msg.textContent = 'บันทึกข้อมูลเรียบร้อย ' + res.count + ' รายการ';
-          msg.className = 'success';
+          if (failedPhotoNames.length > 0) {
+            msg.textContent += ' (⚠️ แนบรูปไม่สำเร็จสำหรับ: ' + failedPhotoNames.join(', ') + ' — บันทึกรายการแล้วแต่ยังไม่มีรูปแนบ กรุณาส่งรูปให้ธุรการแยกภายหลัง)';
+          }
+          msg.className = failedPhotoNames.length > 0 ? 'error' : 'success';
 
           // ส่งข้อความสรุปเข้าไปในแชท LINE ของผู้ใช้เองอัตโนมัติ (เห็นในแชทเป็นหลักฐาน)
           return liffReady.then(function(ready) {
