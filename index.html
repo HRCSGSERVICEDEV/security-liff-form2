@@ -186,6 +186,26 @@
       opacity: 0.85;
     }
 
+    /* ป้ายวันจ่ายเบิก — ให้เด่นแยกออกจากข้อความอื่นในแบนเนอร์สถานะรอบเบิก */
+    .pay-date-badge {
+      display: flex;
+      width: fit-content;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 8px 14px;
+      background: #103a7a;
+      color: #ffffff;
+      border-radius: 999px;
+      font-size: 15px;
+      font-weight: bold;
+      line-height: 1.3;
+    }
+    .pay-date-badge .icon {
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
     /* ล็อกฟอร์มตอนไม่อยู่ในรอบที่เปิดรับเบิก */
     form.locked {
       opacity: 0.45;
@@ -204,14 +224,15 @@
     .photo-btn {
       flex: 1;
       box-sizing: border-box;
-      padding: 10px 6px;
-      font-size: 12.5px;
+      padding: 10px 4px;
+      font-size: 12px;
       font-weight: bold;
       color: #2f6fed;
       background: #eef3ff;
       border: 1.5px solid #b9cdfb;
       border-radius: 8px;
       cursor: pointer;
+      white-space: nowrap;
     }
     .photo-btn:active {
       background: #dde8fd;
@@ -608,9 +629,11 @@
       <input type="number" class="amount" min="1" step="1" required>
       <label>แนบใบค่าแรง</label>
       <div class="photo-box">
-        <input type="file" accept="image/*" class="photoInput" style="display:none">
+        <input type="file" accept="image/*" capture="environment" class="photoInputCamera" style="display:none">
+        <input type="file" accept="image/*" class="photoInputAlbum" style="display:none">
         <div class="photo-btn-row">
-          <button type="button" class="photo-btn photo-attach-btn">📷 แนบใบค่าแรง</button>
+          <button type="button" class="photo-btn photo-camera-btn">📷 ถ่ายภาพ</button>
+          <button type="button" class="photo-btn photo-album-btn">🖼️ เลือกจากอัลบัม</button>
         </div>
         <div class="photo-preview-wrap">
           <img class="photoPreview" alt="">
@@ -680,22 +703,8 @@
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, w, h);
 
-            // แปลงเป็นขาวดำก่อนบีบอัด — ใบค่าแรงเป็นเอกสารข้อความ ไม่จำเป็นต้องมีสี การตัดข้อมูลสีทิ้ง
-            // (เหลือแค่ค่าความสว่าง) ช่วยให้ JPEG บีบไฟล์ได้เล็กลงกว่าเดิมอีกมาก โดยไม่กระทบความชัดของ
-            // ตัวเลข/ตัวหนังสือเลย (มักจะดูคมชัดขึ้นด้วยซ้ำเพราะตัดสัญญาณรบกวนสีออกไป)
-            try {
-              const imgData = ctx.getImageData(0, 0, w, h);
-              const px = imgData.data;
-              for (let i = 0; i < px.length; i += 4) {
-                // สูตรความสว่างมาตรฐาน (luma) ให้น้ำหนักตามความไวสายตาต่อแต่ละสี
-                const gray = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) | 0;
-                px[i] = px[i + 1] = px[i + 2] = gray;
-              }
-              ctx.putImageData(imgData, 0, 0);
-            } catch (grayErr) {
-              // ถ้าทำขาวดำไม่ได้ (เกิดยาก) ก็ยังส่งเป็นรูปสีต่อไปได้ตามปกติ ไม่ใช่ error ที่ควรบล็อกการแนบรูป
-              console.error('แปลงขาวดำไม่สำเร็จ', grayErr);
-            }
+            // หมายเหตุ: เดิมเคยแปลงเป็นขาวดำก่อนบีบอัดเพื่อลดขนาดไฟล์ แต่ต้องดูข้อมูล/รายละเอียดสี
+            // ในภาพ (เช่น ตราปั๊ม/หมึกสี) จึงเปลี่ยนกลับมาเก็บเป็นภาพสีตามปกติ
 
             try {
               resolve(canvas.toDataURL('image/jpeg', PHOTO_JPEG_QUALITY));
@@ -823,18 +832,26 @@
     // เก็บ data URL ของรูปที่เลือกไว้บนตัว element ของแถวนั้นๆ โดยตรง (rowEl._photoDataUrl / rowEl._photoRef)
     // แล้วค่อยอัปโหลดจริงตอนกดยืนยันส่งฟอร์ม เพื่อไม่ให้ค่ารูปที่ยังไม่ได้ใช้ค้างอยู่บน Drive โดยไม่จำเป็น
     function bindPhotoInput_(rowEl) {
-      const fileInput = rowEl.querySelector('.photoInput');
+      const cameraInput = rowEl.querySelector('.photoInputCamera');
+      const albumInput = rowEl.querySelector('.photoInputAlbum');
       const btnRow = rowEl.querySelector('.photo-btn-row');
-      const attachBtn = rowEl.querySelector('.photo-attach-btn');
+      const cameraBtn = rowEl.querySelector('.photo-camera-btn');
+      const albumBtn = rowEl.querySelector('.photo-album-btn');
       const previewWrap = rowEl.querySelector('.photo-preview-wrap');
       const previewImg = rowEl.querySelector('.photoPreview');
       const fileLabel = rowEl.querySelector('.photo-file-label');
       const removeBtn = rowEl.querySelector('.photo-remove-btn');
 
-      attachBtn.addEventListener('click', function() { fileInput.click(); });
+      // ป้ายข้อความเดิมของปุ่ม 2 อัน เก็บไว้ใช้ตอนคืนสถานะหลังย่อรูปเสร็จ/พัง
+      const CAMERA_BTN_LABEL = cameraBtn.textContent;
+      const ALBUM_BTN_LABEL = albumBtn.textContent;
 
-      fileInput.addEventListener('change', function(e) {
-        const file = e.target.files[0];
+      cameraBtn.addEventListener('click', function() { cameraInput.click(); });
+      albumBtn.addEventListener('click', function() { albumInput.click(); });
+
+      // ทั้งปุ่ม "ถ่ายภาพ" และ "เลือกจากอัลบัม" ใช้ logic เดียวกันหลังได้ไฟล์มา ต่างกันแค่ input ต้นทาง
+      function handlePhotoFile_(fileInput) {
+        const file = fileInput.files[0];
         if (!file) return;
 
         if (file.size > MAX_PHOTO_BYTES_CLIENT) {
@@ -845,8 +862,10 @@
         }
 
         const originalBytes = file.size;
-        attachBtn.disabled = true;
-        attachBtn.textContent = 'กำลังย่อรูป...';
+        cameraBtn.disabled = true;
+        albumBtn.disabled = true;
+        cameraBtn.textContent = 'กำลังย่อรูป...';
+        albumBtn.textContent = 'กำลังย่อรูป...';
 
         compressImageFile_(file)
           .then(function(compressedDataUrl) {
@@ -873,15 +892,21 @@
             reader.readAsDataURL(file);
           })
           .finally(function() {
-            attachBtn.disabled = false;
-            attachBtn.textContent = '📷 แนบใบค่าแรง';
+            cameraBtn.disabled = false;
+            albumBtn.disabled = false;
+            cameraBtn.textContent = CAMERA_BTN_LABEL;
+            albumBtn.textContent = ALBUM_BTN_LABEL;
           });
-      });
+      }
+
+      cameraInput.addEventListener('change', function() { handlePhotoFile_(cameraInput); });
+      albumInput.addEventListener('change', function() { handlePhotoFile_(albumInput); });
 
       removeBtn.addEventListener('click', function() {
         rowEl._photoDataUrl = null;
         rowEl._photoRef = null;
-        fileInput.value = '';
+        cameraInput.value = '';
+        albumInput.value = '';
         previewImg.src = '';
         fileLabel.textContent = '';
         previewWrap.style.display = 'none';
@@ -1416,7 +1441,7 @@
       if (info.status === 'open') {
         el.className = 'round-info open';
         el.innerHTML = 'เปิดรับเบิกถึงวันที่ <strong>' + toThaiDate(r.closeDate) + '</strong>' +
-          (r.payDate ? ' • กำหนดจ่ายเงินวันที่ <strong>' + toThaiDate(r.payDate) + '</strong>' : '') +
+          (r.payDate ? '<span class="pay-date-badge"><span class="icon">📅</span>กำหนดจ่ายเงินวันที่ ' + toThaiDate(r.payDate) + '</span>' : '') +
           (r.note ? '<span class="note">' + escapeHtml(r.note) + '</span>' : '');
         setFormLocked(false, 'ส่งข้อมูลทั้งหมด');
       } else {
