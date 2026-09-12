@@ -1021,40 +1021,110 @@
       pendingSubmitData = null;
     });
 
+    const PHOTO_CHUNK_SIZE = 5200;    // ตัวอักษร base64 (web-safe) ต่อ 1 ชิ้น
+    // ตอนนี้แปลง base64 เป็นแบบ "web-safe" ก่อนส่ง (ใช้ - กับ _ แทน + กับ /) ทำให้ไม่ต้องเข้ารหัส URL
+    // ซ้ำอีกชั้น (เดิม + และ / ต้องเข้ารหัสเป็น %2B/%2F ทำให้ยาวขึ้น ~12%) ความยาวที่ส่งจริงจึงใกล้เคียงกับ
+    // ความยาวดิบเกือบเป๊ะ จึงตั้งชิ้นใหญ่ขึ้นได้อีกโดยยังอยู่ในเพดาน URL ที่ปลอดภัย (ดู jsonpGet_ ที่เช็คไว้)
+    const PHOTO_CHUNK_CONCURRENCY = 4; // ส่งพร้อมกันได้สูงสุดกี่ชิ้นต่อครั้ง (ชิ้นเป็นอิสระต่อกัน ลำดับไม่สำคัญ)
+    const PHOTO_CHUNK_MAX_RETRY = 2;   // ถ้าชิ้นไหนส่งไม่สำเร็จ ลองซ้ำได้กี่ครั้งก่อนจะถือว่าอัปโหลดรูปนี้ล้มเหลว
+
+    // ส่งชิ้นเดียวโดยลองซ้ำถ้าเจอ error (เช่น เน็ตสะดุดชั่วคราว) ก่อนจะถือว่าล้มเหลวจริง
+    function sendPhotoChunkWithRetry_(params) {
+      let attempt = 0;
+      function attemptOnce() {
+        attempt++;
+        return jsonpGet_(API_URL, params).catch(function(err) {
+          if (attempt > PHOTO_CHUNK_MAX_RETRY) throw err;
+          return attemptOnce();
+        });
+      }
+      return attemptOnce();
+    }
+
+    // รันงานหลายชิ้นแบบจำกัดจำนวนที่ทำพร้อมกัน (concurrency pool) แทนที่จะทำทีละชิ้นเรียงกันไปเรื่อยๆ
+    // (ทีละชิ้นช้ามากเมื่อมีหลายสิบชิ้น เพราะแต่ละชิ้นต้องรอ round-trip เต็มๆ ก่อนเริ่มชิ้นถัดไป)
+    function runWithConcurrency_(tasks, limit) {
+      return new Promise(function(resolve, reject) {
+        let nextIndex = 0;
+        let active = 0;
+        let done = false;
+        function runNext() {
+          if (done) return;
+          if (nextIndex >= tasks.length) {
+            if (active === 0) { done = true; resolve(); }
+            return;
+          }
+          const idx = nextIndex++;
+          active++;
+          tasks[idx]()
+            .then(function() {
+              active--;
+              runNext();
+            })
+            .catch(function(err) {
+              if (!done) { done = true; reject(err); }
+            });
+        }
+        const starters = Math.min(limit, tasks.length);
+        for (let i = 0; i < starters; i++) runNext();
+        if (tasks.length === 0) resolve();
+      });
+    }
+
     // อัปโหลดรูปถ่ายของ 1 รายการไปที่ Drive ล่วงหน้า (ก่อนเรียก submitRequest)
     //
-    // *** เวอร์ชันทดสอบ ***: ส่งรวมทีเดียวจบผ่าน fetch(POST) ปกติ (ไม่ใส่ mode:'no-cors') อ่าน response
-    // กลับได้จริง — เลียนแบบเทคนิคจากอีกโปรเจ็คที่ยืนยันแล้วว่าใช้งานได้ (ต่างจากโปรเจ็คนั้นตรงที่ของเราเปิดผ่าน
-    // LINE LIFF in-app browser) จุดประสงค์คือทดสอบให้ชัดว่า LIFF บล็อก POST "ทุกแบบ" หรือบล็อกเฉพาะ no-cors
-    // เท่านั้น — ถ้าใช้งานได้จะตัดปัญหาเรื่อง base64 หั่นชิ้น/ความยาว URL ไปได้ทั้งหมดในคราวเดียว
-    // ถ้าลองแล้วยังไม่ได้ผล มีเวอร์ชัน JSONP แบบแบ่งชิ้น (ที่พิสูจน์แล้วว่าอย่างน้อยก็ "ถึง" เซิร์ฟเวอร์แน่ๆ) สำรองไว้
-    // เรียก doPost() ฝั่ง Code.gs (action: 'uploadWageSlip') ซึ่งเป็นโค้ดเดิมที่มีอยู่แล้วในโปรเจกต์
+    // เดิมใช้ fetch(POST, mode:'no-cors') ไปที่ doPost() แต่พบว่าในแอป LINE (LIFF in-app browser)
+    // request แบบนี้ไม่ถึงเซิร์ฟเวอร์เลยสักครั้ง (Executions log ว่างเปล่าทุกครั้ง) ในขณะที่ request แบบ GET
+    // ผ่าน <script src> (JSONP) ที่ submitRequest/roundInfo/unitList ใช้อยู่แล้วทำงานได้ปกติในแอป LINE
+    // จึงเปลี่ยนมาอัปโหลดรูปด้วยวิธีเดียวกัน (JSONP) แทน โดยแบ่งข้อมูล base64 ของรูปเป็นชิ้นเล็ก ๆ
+    // (ชิ้นละไม่เกิน PHOTO_CHUNK_SIZE ตัวอักษร กันเกินลิมิตความยาว URL) ส่งพร้อมกันได้สูงสุด
+    // PHOTO_CHUNK_CONCURRENCY ชิ้น (ชิ้นเป็นอิสระต่อกัน เซิร์ฟเวอร์เก็บแยกตาม index ลำดับที่มาถึงไม่สำคัญ)
+    // แล้วปิดท้ายด้วยการเรียก action:'uploadFinish' ให้เซิร์ฟเวอร์ประกอบร่างกลับเป็นรูปเดียวแล้วเขียนลง Drive จริง
+    // (ดู handleJsonpUploadChunk_ / handleJsonpUploadFinish_ ฝั่ง Code.gs ประกอบ)
+    //
+    // ข้อดีอีกอย่างของ JSONP คือฝั่ง client อ่าน response กลับได้จริง (ต่างจาก no-cors เดิมที่อ่านไม่ได้เลย)
+    // ฟังก์ชันนี้จึง reject จริงถ้าอัปโหลดล้มเหลว (หลังลองซ้ำแล้ว) ให้ doActualSubmit_ นำไปแจ้งผู้ใช้ต่อได้
+    // แทนที่จะเงียบแล้วทำเหมือนสำเร็จ (ของเดิมที่ debug ไม่ได้เลยว่ารูปหายไปตอนไหน)
     function uploadWageSlipPhoto_(photoRef, empId, dataUrl) {
-      const controller = new AbortController();
-      const timer = setTimeout(function() { controller.abort(); }, 25000);
-      return fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // text/plain เพื่อเลี่ยง CORS preflight
-        body: JSON.stringify({ action: 'uploadWageSlip', photoRef: photoRef, empId: empId, imageBase64: dataUrl }),
-        signal: controller.signal
-      }).then(function(r) { return r.text(); }).then(function(text) {
-        clearTimeout(timer);
-        let res;
-        try {
-          res = JSON.parse(text);
-        } catch (e) {
-          throw new Error('เซิร์ฟเวอร์ตอบกลับไม่สมบูรณ์ (อาจมีคนใช้งานพร้อมกันหลายคน) ลองใหม่อีกครั้ง');
-        }
-        if (!res || !res.success) {
-          throw new Error((res && res.message) || 'อัปโหลดรูปไม่สำเร็จ');
-        }
-      }).catch(function(err) {
-        clearTimeout(timer);
-        if (err && err.name === 'AbortError') {
-          throw new Error('เชื่อมต่อนานเกินไป (หมดเวลา) ลองใหม่อีกครั้ง');
-        }
-        throw err;
+      const match = String(dataUrl).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!match) {
+        return Promise.reject(new Error('รูปแบบไฟล์รูปไม่ถูกต้อง'));
+      }
+      const mime = match[1];
+      // แปลงเป็น web-safe base64 (RFC 4648 §5): + -> -, / -> _ แล้วตัด padding = ทิ้ง
+      // (ฝั่งเซิร์ฟเวอร์ใช้ Utilities.base64DecodeWebSafe ถอดรหัสกลับ รองรับแบบไม่มี padding อยู่แล้ว)
+      // ทำแบบนี้เพื่อไม่ให้ encodeURIComponent ต้องเข้ารหัส + และ / ซ้ำอีกชั้นตอนยัดใน URL (ประหยัดความยาว ~12%)
+      const base64Data = match[2].replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+      const chunks = [];
+      for (let i = 0; i < base64Data.length; i += PHOTO_CHUNK_SIZE) {
+        chunks.push(base64Data.slice(i, i + PHOTO_CHUNK_SIZE));
+      }
+      const total = chunks.length;
+
+      const tasks = chunks.map(function(chunk, idx) {
+        return function() {
+          return sendPhotoChunkWithRetry_({
+            action: 'uploadChunk',
+            photoRef: photoRef,
+            idx: idx,
+            total: total,
+            mime: mime,
+            empId: empId,
+            chunk: chunk
+          });
+        };
       });
+
+      return runWithConcurrency_(tasks, PHOTO_CHUNK_CONCURRENCY)
+        .then(function() {
+          return sendPhotoChunkWithRetry_({ action: 'uploadFinish', photoRef: photoRef });
+        })
+        .then(function(res) {
+          if (!res || !res.success) {
+            throw new Error((res && res.message) || 'อัปโหลดรูปไม่สำเร็จ');
+          }
+        });
     }
 
     // ---------------- โอเวอร์เลย์ระหว่างส่งข้อมูล ----------------
