@@ -627,7 +627,23 @@
     const LIFF_ID = '2010742029-t836X301';
     // เปลี่ยนเป็น URL ของ Apps Script deployment ที่ deploy /exec ล่าสุด
     const API_URL = 'https://script.google.com/macros/s/AKfycbzbH0itXYzBG1YOCITcdTTEa-Sq-tWSnGkXE0UbZ95BSJlOUI5tBZi7gleHy7kx7I8u/exec';
-    // เพดานขนาดไฟล์รูปที่ยอมให้แนบต่อ 1 รายการ (ตรงกับ MAX_PHOTO_BYTES ฝั่ง Code.gs) กันเลือกไฟล์ใหญ่เกินไปตั้งแต่ต้นทาง
+
+    // ===== ตั้งค่า Cloudinary (เก็บรูปใบค่าแรงที่นี่แทน Google Drive) =====
+    // 1) สมัคร/ล็อกอิน https://cloudinary.com แล้วเปิด Dashboard จะเห็น "Cloud name" — เอามาใส่ตรงนี้
+    // 2) ไปที่ Settings > Upload > Upload presets > Add upload preset
+    //    - Signing Mode ตั้งเป็น "Unsigned" (จำเป็น เพราะอัปโหลดตรงจากเบราว์เซอร์ ไม่มี server เซ็นคำขอ)
+    //    - ตั้งชื่อ preset แล้วเอามาใส่ในตัวแปร CLOUDINARY_UPLOAD_PRESET ด้านล่าง
+    //    - ถ้าตั้ง "Asset folder" ไว้ในตัว preset เองแล้ว (เหมือน preset "Uploadgithub" ที่ fix ไว้เป็น
+    //      csg-wage-slips) ให้เว้น CLOUDINARY_UPLOAD_FOLDER ด้านล่างเป็นค่าว่าง '' — ไม่ต้องส่ง folder จาก
+    //      client ซ้ำอีก เพราะ unsigned preset ที่ fix โฟลเดอร์ไว้แล้วจะไม่ยอมให้ client ส่ง folder มา override
+    const CLOUDINARY_CLOUD_NAME = 'dsdxozsel';     // Cloud name จาก Cloudinary Dashboard
+    const CLOUDINARY_UPLOAD_PRESET = 'Uploadgithub'; // ชื่อ unsigned upload preset ที่สร้างไว้
+    const CLOUDINARY_UPLOAD_FOLDER = '';           // เว้นว่างไว้ เพราะ preset "Uploadgithub" fix Asset folder เป็น csg-wage-slips ไว้ในตัวเองแล้ว
+    const CLOUDINARY_UPLOAD_URL =
+      'https://api.cloudinary.com/v1_1/' + CLOUDINARY_CLOUD_NAME + '/image/upload';
+
+    // เพดานขนาดไฟล์รูปที่ยอมให้แนบต่อ 1 รายการ กันเลือกไฟล์ใหญ่เกินไปตั้งแต่ต้นทาง (Cloudinary ฝั่ง unsigned
+    // upload เองก็จำกัดไว้ประมาณ 10MB/ไฟล์ ค่านี้ตั้งเผื่อไว้ต่ำกว่านั้นเพื่อให้อัปโหลดผ่านเน็ตมือถือได้เร็ว)
     const MAX_PHOTO_BYTES_CLIENT = 5 * 1024 * 1024; // 5MB
     // ---- ย่อ/บีบอัดรูปก่อนอัปโหลด ----
     // สาเหตุหลักที่กด "ส่งข้อมูล" แล้วค้างนาน คือรูปจากกล้องมือถือมักมีขนาดไฟล์ใหญ่ (หลาย MB ต่อรูป)
@@ -1021,110 +1037,47 @@
       pendingSubmitData = null;
     });
 
-    const PHOTO_CHUNK_SIZE = 5200;    // ตัวอักษร base64 (web-safe) ต่อ 1 ชิ้น
-    // ตอนนี้แปลง base64 เป็นแบบ "web-safe" ก่อนส่ง (ใช้ - กับ _ แทน + กับ /) ทำให้ไม่ต้องเข้ารหัส URL
-    // ซ้ำอีกชั้น (เดิม + และ / ต้องเข้ารหัสเป็น %2B/%2F ทำให้ยาวขึ้น ~12%) ความยาวที่ส่งจริงจึงใกล้เคียงกับ
-    // ความยาวดิบเกือบเป๊ะ จึงตั้งชิ้นใหญ่ขึ้นได้อีกโดยยังอยู่ในเพดาน URL ที่ปลอดภัย (ดู jsonpGet_ ที่เช็คไว้)
-    const PHOTO_CHUNK_CONCURRENCY = 4; // ส่งพร้อมกันได้สูงสุดกี่ชิ้นต่อครั้ง (ชิ้นเป็นอิสระต่อกัน ลำดับไม่สำคัญ)
-    const PHOTO_CHUNK_MAX_RETRY = 2;   // ถ้าชิ้นไหนส่งไม่สำเร็จ ลองซ้ำได้กี่ครั้งก่อนจะถือว่าอัปโหลดรูปนี้ล้มเหลว
+    const CLOUDINARY_UPLOAD_MAX_RETRY = 2; // ถ้าอัปโหลดไม่สำเร็จ ลองซ้ำได้กี่ครั้งก่อนถือว่าล้มเหลวจริง
 
-    // ส่งชิ้นเดียวโดยลองซ้ำถ้าเจอ error (เช่น เน็ตสะดุดชั่วคราว) ก่อนจะถือว่าล้มเหลวจริง
-    function sendPhotoChunkWithRetry_(params) {
-      let attempt = 0;
-      function attemptOnce() {
-        attempt++;
-        return jsonpGet_(API_URL, params).catch(function(err) {
-          if (attempt > PHOTO_CHUNK_MAX_RETRY) throw err;
-          return attemptOnce();
-        });
-      }
-      return attemptOnce();
-    }
-
-    // รันงานหลายชิ้นแบบจำกัดจำนวนที่ทำพร้อมกัน (concurrency pool) แทนที่จะทำทีละชิ้นเรียงกันไปเรื่อยๆ
-    // (ทีละชิ้นช้ามากเมื่อมีหลายสิบชิ้น เพราะแต่ละชิ้นต้องรอ round-trip เต็มๆ ก่อนเริ่มชิ้นถัดไป)
-    function runWithConcurrency_(tasks, limit) {
-      return new Promise(function(resolve, reject) {
-        let nextIndex = 0;
-        let active = 0;
-        let done = false;
-        function runNext() {
-          if (done) return;
-          if (nextIndex >= tasks.length) {
-            if (active === 0) { done = true; resolve(); }
-            return;
-          }
-          const idx = nextIndex++;
-          active++;
-          tasks[idx]()
-            .then(function() {
-              active--;
-              runNext();
-            })
-            .catch(function(err) {
-              if (!done) { done = true; reject(err); }
-            });
-        }
-        const starters = Math.min(limit, tasks.length);
-        for (let i = 0; i < starters; i++) runNext();
-        if (tasks.length === 0) resolve();
-      });
-    }
-
-    // อัปโหลดรูปถ่ายของ 1 รายการไปที่ Drive ล่วงหน้า (ก่อนเรียก submitRequest)
+    // อัปโหลดรูปถ่ายของ 1 รายการขึ้น Cloudinary ตรง ๆ (ก่อนเรียก submitRequest)
     //
-    // เดิมใช้ fetch(POST, mode:'no-cors') ไปที่ doPost() แต่พบว่าในแอป LINE (LIFF in-app browser)
-    // request แบบนี้ไม่ถึงเซิร์ฟเวอร์เลยสักครั้ง (Executions log ว่างเปล่าทุกครั้ง) ในขณะที่ request แบบ GET
-    // ผ่าน <script src> (JSONP) ที่ submitRequest/roundInfo/unitList ใช้อยู่แล้วทำงานได้ปกติในแอป LINE
-    // จึงเปลี่ยนมาอัปโหลดรูปด้วยวิธีเดียวกัน (JSONP) แทน โดยแบ่งข้อมูล base64 ของรูปเป็นชิ้นเล็ก ๆ
-    // (ชิ้นละไม่เกิน PHOTO_CHUNK_SIZE ตัวอักษร กันเกินลิมิตความยาว URL) ส่งพร้อมกันได้สูงสุด
-    // PHOTO_CHUNK_CONCURRENCY ชิ้น (ชิ้นเป็นอิสระต่อกัน เซิร์ฟเวอร์เก็บแยกตาม index ลำดับที่มาถึงไม่สำคัญ)
-    // แล้วปิดท้ายด้วยการเรียก action:'uploadFinish' ให้เซิร์ฟเวอร์ประกอบร่างกลับเป็นรูปเดียวแล้วเขียนลง Drive จริง
-    // (ดู handleJsonpUploadChunk_ / handleJsonpUploadFinish_ ฝั่ง Code.gs ประกอบ)
-    //
-    // ข้อดีอีกอย่างของ JSONP คือฝั่ง client อ่าน response กลับได้จริง (ต่างจาก no-cors เดิมที่อ่านไม่ได้เลย)
-    // ฟังก์ชันนี้จึง reject จริงถ้าอัปโหลดล้มเหลว (หลังลองซ้ำแล้ว) ให้ doActualSubmit_ นำไปแจ้งผู้ใช้ต่อได้
-    // แทนที่จะเงียบแล้วทำเหมือนสำเร็จ (ของเดิมที่ debug ไม่ได้เลยว่ารูปหายไปตอนไหน)
+    // เดิมต้องเลี่ยง CORS ด้วย JSONP + แบ่งรูปเป็นชิ้นเล็กๆ ส่งไปให้ Apps Script ประกอบแล้วเขียนลง Drive
+    // (เพราะ Apps Script web app ไม่รองรับ fetch(POST) ตรงๆ ในบางเบราว์เซอร์/LINE LIFF in-app browser)
+    // Cloudinary's upload API รองรับ CORS จริงและรับไฟล์ตรงจากเบราว์เซอร์ได้เลยผ่าน multipart/form-data
+    // จึงตัดขั้นตอนแบ่งชิ้น/ประกอบร่างทั้งหมดทิ้ง เหลือแค่ fetch(POST) เดียวจบ แล้วได้ secure_url กลับมา
+    // ใช้ส่งต่อเป็น photoUrl ให้ submitRequest() ตรงๆ (ดู isValidCloudinaryUrl_ ฝั่ง Code.gs ที่ตรวจ URL นี้อีกชั้น)
     function uploadWageSlipPhoto_(photoRef, empId, dataUrl) {
       const match = String(dataUrl).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
       if (!match) {
         return Promise.reject(new Error('รูปแบบไฟล์รูปไม่ถูกต้อง'));
       }
-      const mime = match[1];
-      // แปลงเป็น web-safe base64 (RFC 4648 §5): + -> -, / -> _ แล้วตัด padding = ทิ้ง
-      // (ฝั่งเซิร์ฟเวอร์ใช้ Utilities.base64DecodeWebSafe ถอดรหัสกลับ รองรับแบบไม่มี padding อยู่แล้ว)
-      // ทำแบบนี้เพื่อไม่ให้ encodeURIComponent ต้องเข้ารหัส + และ / ซ้ำอีกชั้นตอนยัดใน URL (ประหยัดความยาว ~12%)
-      const base64Data = match[2].replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-      const chunks = [];
-      for (let i = 0; i < base64Data.length; i += PHOTO_CHUNK_SIZE) {
-        chunks.push(base64Data.slice(i, i + PHOTO_CHUNK_SIZE));
-      }
-      const total = chunks.length;
+      const form = new FormData();
+      form.append('file', dataUrl); // Cloudinary รับ data URL แบบ base64 ตรงๆ ในฟิลด์ file ได้เลย
+      form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+      if (CLOUDINARY_UPLOAD_FOLDER) form.append('folder', CLOUDINARY_UPLOAD_FOLDER);
+      // context เก็บ empId/photoRef ไว้เป็น metadata บน Cloudinary เอง (ไม่ได้ใช้ประกอบ URL แล้ว
+      // แต่ช่วยเวลาต้องไล่หารูปย้อนหลังตรง Cloudinary Media Library)
+      const safeEmpId = (empId || 'unknown').toString().trim();
+      form.append('context', 'empId=' + safeEmpId + '|photoRef=' + (photoRef || ''));
 
-      const tasks = chunks.map(function(chunk, idx) {
-        return function() {
-          return sendPhotoChunkWithRetry_({
-            action: 'uploadChunk',
-            photoRef: photoRef,
-            idx: idx,
-            total: total,
-            mime: mime,
-            empId: empId,
-            chunk: chunk
+      let attempt = 0;
+      function attemptOnce() {
+        attempt++;
+        return fetch(CLOUDINARY_UPLOAD_URL, { method: 'POST', body: form })
+          .then(function(res) { return res.json().then(function(json) { return { ok: res.ok, json: json }; }); })
+          .then(function(r) {
+            if (!r.ok || !r.json || !r.json.secure_url) {
+              throw new Error((r.json && r.json.error && r.json.error.message) || 'อัปโหลดรูปไม่สำเร็จ');
+            }
+            return r.json.secure_url;
+          })
+          .catch(function(err) {
+            if (attempt > CLOUDINARY_UPLOAD_MAX_RETRY) throw err;
+            return attemptOnce();
           });
-        };
-      });
-
-      return runWithConcurrency_(tasks, PHOTO_CHUNK_CONCURRENCY)
-        .then(function() {
-          return sendPhotoChunkWithRetry_({ action: 'uploadFinish', photoRef: photoRef });
-        })
-        .then(function(res) {
-          if (!res || !res.success) {
-            throw new Error((res && res.message) || 'อัปโหลดรูปไม่สำเร็จ');
-          }
-        });
+      }
+      return attemptOnce();
     }
 
     // ---------------- โอเวอร์เลย์ระหว่างส่งข้อมูล ----------------
@@ -1161,7 +1114,10 @@
       const itemsWithPhoto = items.filter(function(it) { return it.photoDataUrl && it.photoRef; });
       const photoUploads = itemsWithPhoto.map(function(it) {
         return uploadWageSlipPhoto_(it.photoRef, it.empId, it.photoDataUrl)
-          .then(function() { return { fullName: it.fullName, ok: true }; })
+          .then(function(secureUrl) {
+            it.photoUrl = secureUrl; // เก็บ URL ที่ได้จาก Cloudinary ไว้ที่ตัวรายการ ใช้ตอนสร้าง payload ด้านล่าง
+            return { fullName: it.fullName, ok: true };
+          })
           .catch(function(err) {
             console.error('uploadWageSlipPhoto_ error (' + it.fullName + ')', err);
             return { fullName: it.fullName, ok: false, message: (err && err.message) || 'ไม่ทราบสาเหตุ' };
@@ -1187,14 +1143,14 @@
           showLoading_('กำลังบันทึกข้อมูล');
           // ยิงผ่าน JSONP (<script> tag) แทน fetch() เพื่อเลี่ยงปัญหา CORS
           // ที่เกิดระหว่าง redirect chain ของ Apps Script (script.google.com -> googleusercontent.com)
-          // ส่งเฉพาะ photoRef (รหัสอ้างอิงสั้นๆ) ไปด้วย ไม่ส่งตัวรูป (base64) ซ้ำอีกครั้ง เพราะจะเกินลิมิตความยาว URL
+          // ส่งเฉพาะ photoUrl (ลิงก์ Cloudinary ที่อัปโหลดเสร็จแล้วด้านบน) ไปด้วย ไม่ต้องส่งตัวรูป (base64) เลย
           const payloadItems = items.map(function(it) {
             return {
               empId: it.empId,
               fullName: it.fullName,
               position: it.position,
               amount: it.amount,
-              photoRef: it.photoRef || undefined
+              photoUrl: it.photoUrl || undefined
             };
           });
           return jsonpRequest_(API_URL, {
